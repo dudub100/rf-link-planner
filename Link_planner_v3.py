@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Sun Mar 15 18:09:18 2026
-
-@author: dudub
-"""
-
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
@@ -60,7 +53,7 @@ def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=50):
         return None
     return None
 
-def calculate_itu_attenuation(lat, lon, d_km, f_ghz):
+def calculate_itu_attenuation(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b):
     if d_km <= 0: return pd.DataFrame()
     
     availabilities = [99.0, 99.5, 99.9, 99.95, 99.99, 99.995, 99.999]
@@ -82,6 +75,9 @@ def calculate_itu_attenuation(lat, lon, d_km, f_ghz):
         gas_loss = 0.0
         
     results = []
+    # Calculate Clear Sky RSL (No rain)
+    rsl_clear = tx_power + gain_a + gain_b - fsl - gas_loss
+
     for avail in availabilities:
         p = round(100.0 - avail, 3) 
         try:
@@ -93,19 +89,22 @@ def calculate_itu_attenuation(lat, lon, d_km, f_ghz):
             rain_loss = 0.0
             
         total_loss = fsl + gas_loss + rain_loss
+        rsl_faded = rsl_clear - rain_loss
+
         results.append({
-            "Target Avail.": f"{avail}%",
-            "Outage (p)": f"{p}%",
-            "FSL (dB)": f"{fsl:.2f}",
-            "Atmosphere": f"{gas_loss:.2f}",
-            "Rain Loss": f"{rain_loss:.2f}",
-            "Total Loss (dB)": f"{total_loss:.2f}"
+            "Avail.": f"{avail}%",
+            "Outage": f"{p}%",
+            "FSL (dB)": f"{fsl:.1f}",
+            "Atm. (dB)": f"{gas_loss:.2f}",
+            "Rain (dB)": f"{rain_loss:.1f}",
+            "Total Loss": f"{total_loss:.1f}",
+            "Clear RSL": f"{rsl_clear:.1f} dBm",
+            "Faded RSL": f"{rsl_faded:.1f} dBm"
         })
         
     return pd.DataFrame(results)
 
 def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_path, df_att):
-    """Builds a professional PDF document."""
     class PDF(FPDF):
         def header(self):
             self.set_font("helvetica", "B", 16)
@@ -121,7 +120,6 @@ def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_p
     pdf = PDF()
     pdf.add_page()
     
-    # --- Link Parameters Section ---
     pdf.set_font("helvetica", "B", 12)
     pdf.cell(0, 8, "1. Link Parameters", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("helvetica", "", 10)
@@ -129,7 +127,6 @@ def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_p
     pdf.cell(0, 6, f"Total Path Distance: {d_km:.3f} km", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
-    # --- Site Details ---
     pdf.set_font("helvetica", "B", 12)
     pdf.cell(0, 8, "2. Site Details", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("helvetica", "", 10)
@@ -137,32 +134,28 @@ def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_p
     pdf.cell(95, 6, f"Site B: {site_b['lat']:.6f}, {site_b['lon']:.6f} | Height: {site_b['h']}m", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
 
-    # --- Map Image ---
     pdf.set_font("helvetica", "B", 12)
     pdf.cell(0, 8, "3. Map Overview", new_x="LMARGIN", new_y="NEXT")
     pdf.image(map_img_path, x=15, w=180)
     pdf.ln(5)
 
-    # --- Profile Image ---
     pdf.add_page()
     pdf.set_font("helvetica", "B", 12)
     pdf.cell(0, 8, "4. Line of Sight & Fresnel Zone Profile", new_x="LMARGIN", new_y="NEXT")
     pdf.image(profile_img_path, x=5, w=190)
     pdf.ln(5)
 
-    # --- Attenuation Table ---
     pdf.set_font("helvetica", "B", 12)
-    pdf.cell(0, 8, "5. ITU-R Estimated Attenuation", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, "5. ITU-R Estimated Link Budget", new_x="LMARGIN", new_y="NEXT")
     
-    # Table Header
-    pdf.set_font("helvetica", "B", 9)
-    col_widths = [30, 25, 30, 30, 30, 40]
+    # Adjusted column widths to fit 8 columns onto the PDF page
+    pdf.set_font("helvetica", "B", 8)
+    col_widths = [16, 16, 18, 18, 18, 22, 40, 40]
     for col_name, width in zip(df_att.columns, col_widths):
         pdf.cell(width, 8, col_name, border=1, align="C")
     pdf.ln(8)
     
-    # Table Rows
-    pdf.set_font("helvetica", "", 9)
+    pdf.set_font("helvetica", "", 8)
     for row in df_att.itertuples(index=False):
         for item, width in zip(row, col_widths):
             pdf.cell(width, 8, str(item), border=1, align="C")
@@ -177,6 +170,9 @@ click_target = st.sidebar.radio("Map Click Updates:", ["None (View Only)", "Site
 st.sidebar.divider()
 st.sidebar.subheader("RF Parameters")
 frequency_ghz = st.sidebar.number_input("Frequency (GHz)", value=5.0, min_value=0.1, step=0.1)
+tx_power = st.sidebar.number_input("Transmit Power (dBm)", value=20.0, step=1.0)
+gain_a = st.sidebar.number_input("Antenna Gain Site A (dBi)", value=30.0, step=0.5)
+gain_b = st.sidebar.number_input("Antenna Gain Site B (dBi)", value=30.0, step=0.5)
 
 st.sidebar.divider()
 st.sidebar.subheader("Site A")
@@ -263,6 +259,14 @@ with col2:
                 df_profile["Fresnel_Lower"] = fresnel_lower
                 df_profile["Fresnel_60_Lower"] = fresnel_60_lower
 
+                # --- CALCULATE MIN/MAX Y-AXIS VISIBILITY ---
+                # Find the absolute lowest point (either the ground or the bottom of the Fresnel zone)
+                lowest_point = min(df_profile["Elevation (m)"].min(), min(fresnel_lower))
+                highest_point = max(df_profile["Elevation (m)"].max(), max(fresnel_upper), abs_h_a, abs_h_b)
+                
+                plot_min_y = lowest_point - 15  # Add 15m buffer below the lowest point
+                plot_max_y = highest_point + 15 # Add 15m buffer above the highest point
+
                 # --- 1. BUILD PROFILE CHART ---
                 fig_profile = go.Figure()
                 fig_profile.add_trace(go.Scatter(x=df_profile["Distance (m)"], y=df_profile["Elevation (m)"], fill='tozeroy', mode='lines', line=dict(color='SaddleBrown'), name='Terrain'))
@@ -273,9 +277,12 @@ with col2:
                 fig_profile.add_trace(go.Scatter(x=[0, 0], y=[elev_a, abs_h_a], mode='lines', line=dict(color='black', width=4), name='Mast A'))
                 fig_profile.add_trace(go.Scatter(x=[total_dist, total_dist], y=[elev_b, abs_h_b], mode='lines', line=dict(color='black', width=4), name='Mast B'))
 
+                # APPLY THE Y-AXIS LIMITS HERE
                 fig_profile.update_layout(
                     title=f"Distance: {total_dist/1000:.2f} km | Freq: {frequency_ghz} GHz",
-                    xaxis_title="Distance (m)", yaxis_title="Elevation (m)",
+                    xaxis_title="Distance (m)", 
+                    yaxis_title="Elevation (m)",
+                    yaxis=dict(range=[plot_min_y, plot_max_y]), # New cropping boundary
                     margin=dict(l=0, r=0, t=40, b=0)
                 )
                 
@@ -284,12 +291,11 @@ with col2:
 
                 # --- 2. ITU TABLE ---
                 d_km = total_dist / 1000.0
-                st.markdown("### Estimated Path Attenuation")
-                df_attenuation = calculate_itu_attenuation(center_lat, center_lon, d_km, frequency_ghz)
+                st.markdown("### Estimated Path Attenuation & Receiver Level")
+                df_attenuation = calculate_itu_attenuation(center_lat, center_lon, d_km, frequency_ghz, tx_power, gain_a, gain_b)
                 st.dataframe(df_attenuation, use_container_width=True, hide_index=True)
 
                 # --- 3. GENERATE PDF ASSETS ---
-                # We need a static Mapbox map for the PDF because Folium is pure HTML
                 fig_map = go.Figure(go.Scattermapbox(
                     mode="markers+lines",
                     lon=[st.session_state.site_a["lon"], st.session_state.site_b["lon"]],
@@ -302,7 +308,6 @@ with col2:
                     showlegend=False
                 )
 
-                # Save images temporarily and generate PDF
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     map_path = os.path.join(tmp_dir, "map.png")
                     profile_path = os.path.join(tmp_dir, "profile.png")
@@ -315,10 +320,8 @@ with col2:
                         d_km, frequency_ghz, map_path, profile_path, df_attenuation
                     )
                     
-                    # Store to session state so button doesn't disappear on click
                     st.session_state.pdf_data = pdf_bytes
                     
-    # Display the download button if PDF data exists
     if st.session_state.pdf_data:
         st.success("Analysis complete. Report is ready for download.")
         st.download_button(
