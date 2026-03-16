@@ -1,0 +1,12 @@
+streamlit
+folium
+streamlit-folium
+requests
+pandas
+plotly
+geopy
+numpy
+itur
+astropy
+fpdf2
+kaleido==0.1.0.post1
