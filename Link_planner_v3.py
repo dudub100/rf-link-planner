@@ -86,7 +86,7 @@ def calculate_itu_attenuation(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b):
         })
     return pd.DataFrame(results)
 
-def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_path, df_att):
+def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_path, df_att, ref_data):
     class PDF(FPDF):
         def header(self):
             self.set_font("helvetica", "B", 16)
@@ -125,8 +125,32 @@ def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_p
     pdf.image(profile_img_path, x=5, w=190)
     pdf.ln(5)
 
+    # --- NEW PDF SECTION: MULTIPATH ANALYSIS ---
     pdf.set_font("helvetica", "B", 12)
-    pdf.cell(0, 8, "5. ITU-R Estimated Link Budget", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, "5. Multipath Reflection Analysis", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "", 10)
+    
+    tot_disc = ref_data["total_disc"]
+    if tot_disc < 10.0:
+        status = f"CRITICAL MULTIPATH: Total suppression is only {tot_disc:.1f} dB. Severe fading expected."
+        pdf.set_text_color(220, 53, 69) # Red text
+    elif 10.0 <= tot_disc < 20.0:
+        status = f"MARGINAL MULTIPATH: Total suppression is {tot_disc:.1f} dB. Partial attenuation."
+        pdf.set_text_color(255, 153, 0) # Orange text
+    else:
+        status = f"CLEAR: Total suppression is {tot_disc:.1f} dB. Safely suppressed."
+        pdf.set_text_color(40, 167, 69) # Green text
+
+    pdf.multi_cell(0, 6, status, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0, 0, 0) # Reset to black
+    pdf.ln(2)
+
+    pdf.cell(95, 6, f"Site A Reflection Angle: {ref_data['ang_a']:.2f} deg (Suppression: {ref_data['disc_a']:.1f} dB)", new_x="RIGHT", new_y="TOP")
+    pdf.cell(95, 6, f"Site B Reflection Angle: {ref_data['ang_b']:.2f} deg (Suppression: {ref_data['disc_b']:.1f} dB)", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+
+    pdf.set_font("helvetica", "B", 12)
+    pdf.cell(0, 8, "6. ITU-R Estimated Link Budget", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("helvetica", "B", 8)
     col_widths = [16, 16, 18, 18, 18, 22, 40, 40]
     for col_name, width in zip(df_att.columns, col_widths):
@@ -280,8 +304,6 @@ with col2:
                 off_boresight_b = abs(angle_los_b - angle_ref_b)
 
                 # --- CALCULATE ANTENNA DISCRIMINATION (dB) ---
-                # ITU parabolic main-lobe approximation: Attenuation = 12 * (Theta / HPBW)^2
-                # Capped at a generic 25 dB to represent standard side-lobe levels
                 disc_a = min(12.0 * (off_boresight_a / hpbw_a)**2, 25.0)
                 disc_b = min(12.0 * (off_boresight_b / hpbw_b)**2, 25.0)
                 total_discrimination = disc_a + disc_b
@@ -332,6 +354,15 @@ with col2:
                 st.dataframe(df_attenuation, use_container_width=True, hide_index=True)
 
                 # --- 4. PDF GENERATION ---
+                # Package reflection data to send to the PDF generator
+                ref_data = {
+                    "total_disc": total_discrimination,
+                    "ang_a": off_boresight_a,
+                    "disc_a": disc_a,
+                    "ang_b": off_boresight_b,
+                    "disc_b": disc_b
+                }
+                
                 fig_map = go.Figure(go.Scattermapbox(mode="markers+lines", lon=[st.session_state.site_a["lon"], st.session_state.site_b["lon"]], lat=[st.session_state.site_a["lat"], st.session_state.site_b["lat"]], marker={'size': 12, 'color': ["green", "red"]}))
                 fig_map.update_layout(mapbox={'style': "open-street-map", 'center': {'lon': center_lon, 'lat': center_lat}, 'zoom': 11}, margin={'l':0, 'r':0, 'b':0, 't':0}, showlegend=False)
 
@@ -340,7 +371,9 @@ with col2:
                     profile_path = os.path.join(tmp_dir, "profile.png")
                     fig_map.write_image(map_path, width=800, height=400)
                     fig_profile.write_image(profile_path, width=800, height=400)
-                    pdf_bytes = generate_pdf_report(st.session_state.site_a, st.session_state.site_b, d_km, frequency_ghz, map_path, profile_path, df_attenuation)
+                    
+                    # Pass ref_data to the PDF function
+                    pdf_bytes = generate_pdf_report(st.session_state.site_a, st.session_state.site_b, d_km, frequency_ghz, map_path, profile_path, df_attenuation, ref_data)
                     st.session_state.pdf_data = pdf_bytes
                     
     if st.session_state.pdf_data:
