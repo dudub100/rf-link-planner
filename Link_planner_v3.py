@@ -24,19 +24,15 @@ if "pdf_data" not in st.session_state:
 
 # --- 2. HELPER FUNCTIONS ---
 def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=50):
-    # Generate coordinates along the path
     lats = np.linspace(lat1, lat2, num_points)
     lons = np.linspace(lon1, lon2, num_points)
     coords = list(zip(lats, lons))
-    
-    # Calculate cumulative distances
     distances = [0.0]
     for i in range(1, len(coords)):
         dist = geodesic(coords[i-1], coords[i]).meters
         distances.append(distances[-1] + dist)
 
-    # --- ATTEMPT 1: OPENTOPODATA (Primary - SRTM 30m) ---
-    # OpenTopoData requires coordinates formatted as a single string: "lat,lon|lat,lon"
+    # Attempt 1: OpenTopoData (SRTM 30m)
     locations_str = "|".join([f"{lat},{lon}" for lat, lon in coords])
     url_opentopo = f"https://api.opentopodata.org/v1/srtm30m?locations={locations_str}"
     
@@ -48,10 +44,9 @@ def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=50):
             if len(elevations) == num_points:
                 return pd.DataFrame({"Distance (m)": distances, "Elevation (m)": elevations, "Lat": lats, "Lon": lons})
     except Exception as e:
-        print(f"OpenTopoData failed: {e}. Switching to fallback...") # Logs to your terminal
+        print(f"OpenTopoData failed: {e}. Switching to fallback...")
 
-    # --- ATTEMPT 2: OPEN-ELEVATION (Fallback - SRTM 90m) ---
-    # Open-Elevation requires a JSON payload
+    # Attempt 2: Open-Elevation (SRTM 90m)
     url_openelev = "https://api.open-elevation.com/api/v1/lookup"
     payload = {"locations": [{"latitude": lat, "longitude": lon} for lat, lon in coords]}
     
@@ -63,23 +58,31 @@ def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=50):
             if len(elevations) == num_points:
                 return pd.DataFrame({"Distance (m)": distances, "Elevation (m)": elevations, "Lat": lats, "Lon": lons})
     except Exception as e:
-        st.error(f"Critical Failure: Both elevation servers timed out or rejected the request. Please try again later. Error: {e}")
+        st.error(f"Critical Failure: Both elevation servers timed out. Error: {e}")
         return None
         
     st.error("Elevation data could not be retrieved from either service.")
     return None
 
-def calculate_itu_attenuation(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b):
+def calculate_itu_attenuation(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b, t_c, rh):
     if d_km <= 0: return pd.DataFrame()
     availabilities = [99.0, 99.5, 99.9, 99.95, 99.99, 99.995, 99.999]
     fsl = 92.4 + 20 * np.log10(d_km) + 20 * np.log10(f_ghz)
     
+    # --- DYNAMIC WATER VAPOR CALCULATION ---
+    # Saturation vapor pressure (hPa)
+    e_s = 6.1121 * np.exp((17.502 * t_c) / (240.97 + t_c))
+    # Actual vapor pressure (hPa)
+    e = e_s * (rh / 100.0)
+    # Water vapor density (g/m^3)
+    rho_calc = 216.7 * (e / (t_c + 273.15))
+    
     d_val = d_km * u.km
     f_val = f_ghz * u.GHz
     el_val = 0.0 * u.deg
-    rho_val = 7.5 * (u.g / u.m**3)
+    rho_val = rho_calc * (u.g / u.m**3)  # Applied dynamic density
     P_val = 1013.25 * u.hPa
-    T_val = 15.0 * u.deg_C
+    T_val = t_c * u.deg_C  # Applied dynamic temperature
 
     try:
         gas_loss_obj = itur.models.itu676.gaseous_attenuation_terrestrial_path(
@@ -149,7 +152,6 @@ def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_p
     pdf.image(profile_img_path, x=5, w=190)
     pdf.ln(5)
 
-    # --- NEW PDF SECTION: MULTIPATH ANALYSIS ---
     pdf.set_font("helvetica", "B", 12)
     pdf.cell(0, 8, "5. Multipath Reflection Analysis", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("helvetica", "", 10)
@@ -157,16 +159,16 @@ def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_p
     tot_disc = ref_data["total_disc"]
     if tot_disc < 10.0:
         status = f"CRITICAL MULTIPATH: Total suppression is only {tot_disc:.1f} dB. Severe fading expected."
-        pdf.set_text_color(220, 53, 69) # Red text
+        pdf.set_text_color(220, 53, 69)
     elif 10.0 <= tot_disc < 20.0:
         status = f"MARGINAL MULTIPATH: Total suppression is {tot_disc:.1f} dB. Partial attenuation."
-        pdf.set_text_color(255, 153, 0) # Orange text
+        pdf.set_text_color(255, 153, 0)
     else:
         status = f"CLEAR: Total suppression is {tot_disc:.1f} dB. Safely suppressed."
-        pdf.set_text_color(40, 167, 69) # Green text
+        pdf.set_text_color(40, 167, 69)
 
     pdf.multi_cell(0, 6, status, new_x="LMARGIN", new_y="NEXT")
-    pdf.set_text_color(0, 0, 0) # Reset to black
+    pdf.set_text_color(0, 0, 0)
     pdf.ln(2)
 
     pdf.cell(95, 6, f"Site A Reflection Angle: {ref_data['ang_a']:.2f} deg (Suppression: {ref_data['disc_a']:.1f} dB)", new_x="RIGHT", new_y="TOP")
@@ -191,6 +193,11 @@ def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_p
 # --- 3. SIDEBAR USER INTERFACE ---
 st.sidebar.title("Link Parameters")
 click_target = st.sidebar.radio("Map Click Updates:", ["None (View Only)", "Site A", "Site B"])
+
+st.sidebar.divider()
+st.sidebar.subheader("Atmospheric Conditions")
+env_temp = st.sidebar.number_input("Temperature (°C)", value=15.0, step=1.0)
+env_humidity = st.sidebar.number_input("Relative Humidity (%)", value=50.0, min_value=0.0, max_value=100.0, step=1.0)
 
 st.sidebar.divider()
 st.sidebar.subheader("RF Parameters")
@@ -374,11 +381,11 @@ with col2:
                 # --- 3. ITU TABLE ---
                 d_km = total_dist / 1000.0
                 st.markdown("### Estimated Path Attenuation & Receiver Level")
-                df_attenuation = calculate_itu_attenuation(center_lat, center_lon, d_km, frequency_ghz, tx_power, gain_a, gain_b)
+                # Pass environmental variables down to the attenuation function
+                df_attenuation = calculate_itu_attenuation(center_lat, center_lon, d_km, frequency_ghz, tx_power, gain_a, gain_b, env_temp, env_humidity)
                 st.dataframe(df_attenuation, use_container_width=True, hide_index=True)
 
                 # --- 4. PDF GENERATION ---
-                # Package reflection data to send to the PDF generator
                 ref_data = {
                     "total_disc": total_discrimination,
                     "ang_a": off_boresight_a,
@@ -396,7 +403,6 @@ with col2:
                     fig_map.write_image(map_path, width=800, height=400)
                     fig_profile.write_image(profile_path, width=800, height=400)
                     
-                    # Pass ref_data to the PDF function
                     pdf_bytes = generate_pdf_report(st.session_state.site_a, st.session_state.site_b, d_km, frequency_ghz, map_path, profile_path, df_attenuation, ref_data)
                     st.session_state.pdf_data = pdf_bytes
                     
