@@ -24,25 +24,49 @@ if "pdf_data" not in st.session_state:
 
 # --- 2. HELPER FUNCTIONS ---
 def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=50):
+    # Generate coordinates along the path
     lats = np.linspace(lat1, lat2, num_points)
     lons = np.linspace(lon1, lon2, num_points)
     coords = list(zip(lats, lons))
+    
+    # Calculate cumulative distances
     distances = [0.0]
     for i in range(1, len(coords)):
         dist = geodesic(coords[i-1], coords[i]).meters
         distances.append(distances[-1] + dist)
 
-    url = "https://api.open-elevation.com/api/v1/lookup"
-    payload = {"locations": [{"latitude": lat, "longitude": lon} for lat, lon in coords]}
+    # --- ATTEMPT 1: OPENTOPODATA (Primary - SRTM 30m) ---
+    # OpenTopoData requires coordinates formatted as a single string: "lat,lon|lat,lon"
+    locations_str = "|".join([f"{lat},{lon}" for lat, lon in coords])
+    url_opentopo = f"https://api.opentopodata.org/v1/srtm30m?locations={locations_str}"
+    
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            results = response.json().get('results', [])
+        response1 = requests.get(url_opentopo, timeout=10)
+        if response1.status_code == 200:
+            results = response1.json().get('results', [])
             elevations = [res['elevation'] for res in results]
-            return pd.DataFrame({"Distance (m)": distances, "Elevation (m)": elevations, "Lat": lats, "Lon": lons})
+            if len(elevations) == num_points:
+                return pd.DataFrame({"Distance (m)": distances, "Elevation (m)": elevations, "Lat": lats, "Lon": lons})
     except Exception as e:
-        st.error(f"Failed to fetch elevation data: {e}")
+        print(f"OpenTopoData failed: {e}. Switching to fallback...") # Logs to your terminal
+
+    # --- ATTEMPT 2: OPEN-ELEVATION (Fallback - SRTM 90m) ---
+    # Open-Elevation requires a JSON payload
+    url_openelev = "https://api.open-elevation.com/api/v1/lookup"
+    payload = {"locations": [{"latitude": lat, "longitude": lon} for lat, lon in coords]}
+    
+    try:
+        response2 = requests.post(url_openelev, json=payload, timeout=15)
+        if response2.status_code == 200:
+            results = response2.json().get('results', [])
+            elevations = [res['elevation'] for res in results]
+            if len(elevations) == num_points:
+                return pd.DataFrame({"Distance (m)": distances, "Elevation (m)": elevations, "Lat": lats, "Lon": lons})
+    except Exception as e:
+        st.error(f"Critical Failure: Both elevation servers timed out or rejected the request. Please try again later. Error: {e}")
         return None
+        
+    st.error("Elevation data could not be retrieved from either service.")
     return None
 
 def calculate_itu_attenuation(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b):
