@@ -27,7 +27,6 @@ def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=50):
     lats = np.linspace(lat1, lat2, num_points)
     lons = np.linspace(lon1, lon2, num_points)
     coords = list(zip(lats, lons))
-    
     distances = [0.0]
     for i in range(1, len(coords)):
         dist = geodesic(coords[i-1], coords[i]).meters
@@ -35,7 +34,6 @@ def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=50):
 
     url = "https://api.open-elevation.com/api/v1/lookup"
     payload = {"locations": [{"latitude": lat, "longitude": lon} for lat, lon in coords]}
-    
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
@@ -151,7 +149,6 @@ st.sidebar.subheader("RF Parameters")
 frequency_ghz = st.sidebar.number_input("Frequency (GHz)", value=15.0, min_value=0.1, step=0.1)
 tx_power = st.sidebar.number_input("Transmit Power (dBm)", value=20.0, step=1.0)
 
-# Calculate Wavelength
 c = 3e8
 wavelength = c / (frequency_ghz * 1e9)
 
@@ -201,10 +198,10 @@ with col1:
     if map_data and map_data.get("last_clicked"):
         clicked_lat = map_data["last_clicked"]["lat"]
         clicked_lon = map_data["last_clicked"]["lng"]
-        if click_target == "Site A" and (clicked_lat != st.session_state.site_a["lat"] or clicked_lon != st.session_state.site_a["lon"]):
+        if click_target == "Site A":
             st.session_state.site_a.update({"lat": clicked_lat, "lon": clicked_lon})
             st.rerun() 
-        elif click_target == "Site B" and (clicked_lat != st.session_state.site_b["lat"] or clicked_lon != st.session_state.site_b["lon"]):
+        elif click_target == "Site B":
             st.session_state.site_b.update({"lat": clicked_lat, "lon": clicked_lon})
             st.rerun() 
 
@@ -243,21 +240,37 @@ with col2:
                 df_profile["Fresnel_Lower"] = fresnel_lower
                 df_profile["Fresnel_60_Lower"] = fresnel_60_lower
 
-                # --- MULTIPATH REFLECTION CALCULATION ---
-                # 1. Approximate the flat reflection plane using minimum terrain elevation
-                min_elev = df_profile["Elevation (m)"].min()
-                h1_eff = abs_h_a - min_elev
-                h2_eff = abs_h_b - min_elev
+                # --- EXACT MULTIPATH REFLECTION CALCULATION ---
+                x_vals = df_profile["Distance (m)"].values
+                y_vals = df_profile["Elevation (m)"].values
                 
-                # 2. Geometric reflection distance from Site A
-                d_ref_ideal = total_dist * (h1_eff / (h1_eff + h2_eff)) if (h1_eff + h2_eff) > 0 else total_dist / 2
+                dy = np.gradient(y_vals)
+                dx = np.gradient(x_vals)
+                dx[dx == 0] = 1e-6 
+                alpha_g = np.arctan2(dy, dx) 
                 
-                # 3. Find closest actual terrain point to that distance
-                idx_ref = (df_profile['Distance (m)'] - d_ref_ideal).abs().idxmin()
-                ref_dist = df_profile.loc[idx_ref, 'Distance (m)']
-                ref_elev = df_profile.loc[idx_ref, 'Elevation (m)']
+                alpha_a = np.zeros_like(x_vals)
+                alpha_b = np.zeros_like(x_vals)
+                valid_idx = (x_vals > 0) & (x_vals < total_dist)
                 
-                # 4. Angle Analysis (Degrees)
+                alpha_a[valid_idx] = np.arctan2(abs_h_a - y_vals[valid_idx], x_vals[valid_idx])
+                alpha_b[valid_idx] = np.arctan2(abs_h_b - y_vals[valid_idx], total_dist - x_vals[valid_idx])
+                
+                diff = np.abs(alpha_a - alpha_b + 2 * alpha_g)
+                diff[~valid_idx] = np.inf
+                
+                grazing_a = alpha_a + alpha_g
+                grazing_b = alpha_b - alpha_g
+                diff[(grazing_a <= 0) | (grazing_b <= 0)] = np.inf
+                
+                idx_ref = np.argmin(diff)
+                
+                if np.isinf(diff[idx_ref]):
+                    idx_ref = len(x_vals) // 2
+                    
+                ref_dist = x_vals[idx_ref]
+                ref_elev = y_vals[idx_ref]
+                
                 angle_los_a = np.degrees(np.arctan2(abs_h_b - abs_h_a, total_dist))
                 angle_ref_a = np.degrees(np.arctan2(ref_elev - abs_h_a, ref_dist))
                 off_boresight_a = abs(angle_los_a - angle_ref_a)
@@ -265,6 +278,13 @@ with col2:
                 angle_los_b = np.degrees(np.arctan2(abs_h_a - abs_h_b, total_dist))
                 angle_ref_b = np.degrees(np.arctan2(ref_elev - abs_h_b, total_dist - ref_dist))
                 off_boresight_b = abs(angle_los_b - angle_ref_b)
+
+                # --- CALCULATE ANTENNA DISCRIMINATION (dB) ---
+                # ITU parabolic main-lobe approximation: Attenuation = 12 * (Theta / HPBW)^2
+                # Capped at a generic 25 dB to represent standard side-lobe levels
+                disc_a = min(12.0 * (off_boresight_a / hpbw_a)**2, 25.0)
+                disc_b = min(12.0 * (off_boresight_b / hpbw_b)**2, 25.0)
+                total_discrimination = disc_a + disc_b
 
                 # --- 1. BUILD PROFILE CHART ---
                 lowest_point = min(df_profile["Elevation (m)"].min(), min(fresnel_lower))
@@ -279,7 +299,6 @@ with col2:
                 fig_profile.add_trace(go.Scatter(x=[0, 0], y=[elev_a, abs_h_a], mode='lines', line=dict(color='black', width=4), name='Mast A'))
                 fig_profile.add_trace(go.Scatter(x=[total_dist, total_dist], y=[elev_b, abs_h_b], mode='lines', line=dict(color='black', width=4), name='Mast B'))
                 
-                # ADD THE REFLECTED PATH TRACE
                 fig_profile.add_trace(go.Scatter(x=[0, ref_dist, total_dist], y=[abs_h_a, ref_elev, abs_h_b], mode='lines+markers', line=dict(color='orange', dash='dashdot', width=2), marker=dict(size=6, color='orange'), name='Reflected Path'))
 
                 fig_profile.update_layout(
@@ -291,21 +310,20 @@ with col2:
                 st.plotly_chart(fig_profile, use_container_width=True)
 
                 # --- 2. MULTIPATH WARNING BANNER ---
-                risk_a = off_boresight_a < (hpbw_a / 2)
-                risk_b = off_boresight_b < (hpbw_b / 2)
-
-                if risk_a or risk_b:
-                    st.error("⚠️ **MULTIPATH WARNING:** The ground reflection path falls inside the main beam of the antenna. The signal is not sufficiently attenuated and may cause deep fading.")
+                if total_discrimination < 10.0:
+                    st.error(f"🔴 **CRITICAL MULTIPATH:** Total suppression is only **{total_discrimination:.1f} dB**. Both antennas are staring at the reflection point. Expect severe destructive fading.")
+                elif 10.0 <= total_discrimination < 20.0:
+                    st.warning(f"🟡 **MARGINAL MULTIPATH:** Total suppression is **{total_discrimination:.1f} dB**. The reflection is partially attenuated, but may still cause signal ripple. Consider larger dishes or spatial diversity.")
                 else:
-                    st.success("✅ **CLEAR:** The ground reflection angle falls outside the main beam. Side-lobe suppression should adequately attenuate the multipath interference.")
+                    st.success(f"✅ **CLEAR:** Total suppression is **{total_discrimination:.1f} dB**. The geometric reflection angle is safely suppressed by the combined antenna patterns.")
 
                 col_a, col_b = st.columns(2)
                 with col_a:
                     st.markdown(f"**Site A Reflection Angle:** {off_boresight_a:.2f}° off-boresight")
-                    st.markdown(f"*(Beamwidth limit: {hpbw_a/2:.2f}°)*")
+                    st.markdown(f"*(Calculated Suppression: {disc_a:.1f} dB)*")
                 with col_b:
                     st.markdown(f"**Site B Reflection Angle:** {off_boresight_b:.2f}° off-boresight")
-                    st.markdown(f"*(Beamwidth limit: {hpbw_b/2:.2f}°)*")
+                    st.markdown(f"*(Calculated Suppression: {disc_b:.1f} dB)*")
 
                 # --- 3. ITU TABLE ---
                 d_km = total_dist / 1000.0
