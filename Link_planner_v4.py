@@ -11,22 +11,25 @@ from astropy import units as u
 from fpdf import FPDF
 import tempfile
 import os
-import urllib.parse
-from streamlit_js_eval import streamlit_js_eval, get_geolocation
+import re
+import streamlit.components.v1 as components
+from streamlit_js_eval import get_geolocation
 
 # --- 1. INITIAL SETUP (MUST BE FIRST) ---
 st.set_page_config(layout="wide", page_title="RF Link Profiler Pro")
 
-# Helper to safely get one number from URL params (Fixes the Safari Blank Page)
+# Bulletproof URL Parameter Parser (Strips WhatsApp's weird trailing characters)
 def get_safe_param(key, default):
     try:
-        val = st.query_params.get(key)
-        if val is None: return default
-        # Handle cases where param might be a list or a single string
-        if isinstance(val, list): val = val[0]
-        return float(val)
-    except:
-        return default
+        if key in st.query_params:
+            val = st.query_params[key]
+            if isinstance(val, list): val = val[0]
+            # Strip EVERYTHING except numbers, decimals, and minus signs
+            clean_val = re.sub(r'[^\d\.\-]', '', str(val))
+            if clean_val: return float(clean_val)
+    except Exception as e:
+        pass
+    return float(default)
 
 # --- 2. SESSION STATE INITIALIZATION ---
 if "lat_a" not in st.session_state: st.session_state.lat_a = 40.7128
@@ -43,16 +46,15 @@ if "gps_requested" not in st.session_state: st.session_state.gps_requested = Fal
 if "pdf_data" not in st.session_state: st.session_state.pdf_data = None
 if "peer_loaded" not in st.session_state: st.session_state.peer_loaded = False
 
-# --- 3. ROBUST DEEP-LINKING (Logic to catch WhatsApp link data) ---
+# --- 3. ROBUST DEEP-LINKING ---
 if "peer_lat" in st.query_params and not st.session_state.peer_loaded:
     st.session_state.lat_b = get_safe_param("peer_lat", st.session_state.lat_b)
     st.session_state.lon_b = get_safe_param("peer_lon", st.session_state.lon_b)
     st.session_state.h_b = get_safe_param("peer_h", st.session_state.h_b)
     st.session_state.peer_loaded = True
-    st.toast("✅ Peer Location Synchronized!")
+    st.toast("✅ Peer Location Synchronized!", icon="📡")
 
 # --- 4. RF & ELEVATION HELPERS ---
-
 def fetch_weather(lat, lon):
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m"
@@ -73,8 +75,7 @@ def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=50):
     coords = list(zip(lats, lons))
     distances = [0.0]
     for i in range(1, len(coords)):
-        dist = geodesic(coords[i-1], coords[i]).meters
-        distances.append(distances[-1] + dist)
+        distances.append(distances[-1] + geodesic(coords[i-1], coords[i]).meters)
 
     loc_str = "|".join([f"{lat},{lon}" for lat, lon in coords])
     try:
@@ -120,8 +121,7 @@ def generate_pdf_report(lat_a, lon_a, lat_b, lon_b, d_km, f_ghz, profile_img_pat
     pdf.image(profile_img_path, x=10, w=190); pdf.ln(5)
     pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "3. ITU-R Estimated Link Budget", ln=True)
     pdf.set_font("helvetica", "B", 8)
-    cols = list(df_att.columns)
-    for col in cols: pdf.cell(31, 8, col, border=1, align="C")
+    for col in list(df_att.columns): pdf.cell(31, 8, col, border=1, align="C")
     pdf.ln()
     pdf.set_font("helvetica", "", 8)
     for row in df_att.itertuples(index=False):
@@ -129,7 +129,25 @@ def generate_pdf_report(lat_a, lon_a, lat_b, lon_b, d_km, f_ghz, profile_img_pat
         pdf.ln()
     return bytes(pdf.output())
 
-# --- 5. SIDEBAR TOOLS ---
+# --- 5. NATIVE WHATSAPP SHARE BUTTON ---
+def render_whatsapp_button(lat, lon, h):
+    html_code = f"""
+    <a id="wa-link" href="#" target="_blank" style="text-decoration:none; display:block; background-color:#25D366; color:white; padding:12px; border-radius:8px; text-align:center; font-family:sans-serif; font-weight:bold;">
+        📲 Share via WhatsApp
+    </a>
+    <script>
+        // Native JS handles the URL instead of Python, preventing React crashes
+        setTimeout(function() {{
+            var base = window.location.href.split('?')[0];
+            var shareUrl = base + "?peer_lat={lat}&peer_lon={lon}&peer_h={h}";
+            var msg = encodeURIComponent("Connect to my RF link: " + shareUrl);
+            document.getElementById('wa-link').href = "https://wa.me/?text=" + msg;
+        }}, 200);
+    </script>
+    """
+    components.html(html_code, height=60)
+
+# --- 6. SIDEBAR TOOLS ---
 st.sidebar.title("📡 Field Tools")
 click_target = st.sidebar.radio("Map Click Updates:", ["None", "Site A", "Site B"])
 
@@ -137,11 +155,10 @@ if st.sidebar.button("📍 Set Site A to My Location"):
     st.session_state.gps_requested = True
     st.rerun()
 
-# Handle GPS result (if requested)
 loc_data = get_geolocation()
 if st.session_state.gps_requested and loc_data:
-    st.session_state.lat_a = loc_data['coords']['latitude']
-    st.session_state.lon_a = loc_data['coords']['longitude']
+    st.session_state.lat_a = float(loc_data['coords']['latitude'])
+    st.session_state.lon_a = float(loc_data['coords']['longitude'])
     alt = loc_data['coords']['altitude'] if loc_data['coords']['altitude'] else 0
     ground = get_ground_elevation(st.session_state.lat_a, st.session_state.lon_a)
     st.session_state.h_a = round(float(max(5.0, alt - ground)), 1)
@@ -156,16 +173,8 @@ if st.sidebar.button("☁️ Sync Local Weather"):
 
 st.sidebar.divider()
 
-# Share URL Logic
-curr_url = streamlit_js_eval(js_expressions="window.location.href", want_output=True, key="get_url")
-if curr_url:
-    base = curr_url.split("?")[0]
-    share_url = f"{base}?peer_lat={st.session_state.lat_a}&peer_lon={st.session_state.lon_a}&peer_h={st.session_state.h_a}"
-    msg = urllib.parse.quote(f"Connect to my RF link: {share_url}")
-    wa_link = f"https://wa.me/?text={msg}"
-    st.sidebar.markdown(f'''<a href="{wa_link}" target="_blank" style="text-decoration:none;"><div style="background-color:#25D366;color:white;padding:12px;border-radius:8px;text-align:center;font-weight:bold;">📲 Share Location via WhatsApp</div></a>''', unsafe_allow_html=True)
-else:
-    st.sidebar.info("⏳ Initializing Share Link...")
+# Call the safe HTML WhatsApp button
+render_whatsapp_button(st.session_state.lat_a, st.session_state.lon_a, st.session_state.h_a)
 
 st.sidebar.divider()
 
@@ -182,7 +191,6 @@ st.session_state.h_b = st.sidebar.number_input("Height B (m)", value=float(st.se
 
 st.sidebar.divider()
 
-# RF & Atmosphere
 st.sidebar.subheader("RF Parameters")
 freq = st.sidebar.number_input("Frequency (GHz)", value=15.0, min_value=0.1)
 tx_p = st.sidebar.number_input("TX Power (dBm)", value=20.0)
@@ -195,15 +203,15 @@ st.sidebar.subheader("Atmosphere")
 temp = st.sidebar.number_input("Temp (°C)", value=float(st.session_state.env_temp), format="%.1f")
 rh = st.sidebar.number_input("Humidity (%)", value=float(st.session_state.env_rh), format="%.1f")
 
-# --- 6. MAIN DISPLAY ---
+# --- 7. MAIN DISPLAY ---
 st.title("RF Path Profiler")
 c1, c2 = st.columns([1, 1])
 
 with c1:
-    m = folium.Map(location=[st.session_state.lat_a, st.session_state.lon_a], zoom_start=12)
-    folium.Marker([st.session_state.lat_a, st.session_state.lon_a], icon=folium.Icon(color="green")).add_to(m)
-    folium.Marker([st.session_state.lat_b, st.session_state.lon_b], icon=folium.Icon(color="red")).add_to(m)
-    folium.PolyLine([(st.session_state.lat_a, st.session_state.lon_a), (st.session_state.lat_b, st.session_state.lon_b)], color="blue").add_to(m)
+    m = folium.Map(location=[float(st.session_state.lat_a), float(st.session_state.lon_a)], zoom_start=12)
+    folium.Marker([float(st.session_state.lat_a), float(st.session_state.lon_a)], icon=folium.Icon(color="green")).add_to(m)
+    folium.Marker([float(st.session_state.lat_b), float(st.session_state.lon_b)], icon=folium.Icon(color="red")).add_to(m)
+    folium.PolyLine([(float(st.session_state.lat_a), float(st.session_state.lon_a)), (float(st.session_state.lat_b), float(st.session_state.lon_b))], color="blue").add_to(m)
     m_data = st_folium(m, height=500, width=700, key="rf_map")
     
     if m_data and m_data.get("last_clicked"):
