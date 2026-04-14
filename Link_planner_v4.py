@@ -28,22 +28,21 @@ if "env_temp" not in st.session_state: st.session_state.env_temp = 15.0
 if "env_rh" not in st.session_state: st.session_state.env_rh = 50.0
 if "gps_requested" not in st.session_state: st.session_state.gps_requested = False
 if "pdf_data" not in st.session_state: st.session_state.pdf_data = None
+if "peer_loaded" not in st.session_state: st.session_state.peer_loaded = False
 
-# --- NEW ROBUST DEEP-LINKING LOGIC ---
-query_params = st.query_params
-
-if "peer_lat" in query_params:
+# --- ROBUST DEEP-LINKING LOGIC (SAFARI SAFE) ---
+if "peer_lat" in st.query_params and not st.session_state.peer_loaded:
     try:
         # Load peer coordinates into Site B
-        st.session_state.lat_b = float(query_params["peer_lat"])
-        st.session_state.lon_b = float(query_params["peer_lon"])
-        st.session_state.h_b = float(query_params["peer_h"])
+        st.session_state.lat_b = float(st.query_params.get("peer_lat", st.session_state.lat_b))
+        st.session_state.lon_b = float(st.query_params.get("peer_lon", st.session_state.lon_b))
+        st.session_state.h_b = float(st.query_params.get("peer_h", st.session_state.h_b))
         
-        # Clear the params so it doesn't snap back if changed manually later
-        st.query_params.clear() 
+        # Mark as loaded so it doesn't snap back if changed manually later
+        st.session_state.peer_loaded = True 
         st.toast("✅ Peer Site B Location Loaded!")
-    except Exception as e:
-        st.error(f"Failed to load peer location: {e}")
+    except Exception:
+        pass # Fail silently so the app never white-screens
 
 # --- 2. HELPER FUNCTIONS ---
 
