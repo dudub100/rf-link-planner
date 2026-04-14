@@ -29,15 +29,21 @@ if "env_rh" not in st.session_state: st.session_state.env_rh = 50.0
 if "gps_requested" not in st.session_state: st.session_state.gps_requested = False
 if "pdf_data" not in st.session_state: st.session_state.pdf_data = None
 
-# Deep-Linking Peer Check
-params = st.query_params
-if "peer_lat" in params:
+# --- NEW ROBUST DEEP-LINKING LOGIC ---
+query_params = st.query_params
+
+if "peer_lat" in query_params:
     try:
-        st.session_state.lat_b = float(params["peer_lat"])
-        st.session_state.lon_b = float(params["peer_lon"])
-        st.session_state.h_b = float(params["peer_h"])
+        # Load peer coordinates into Site B
+        st.session_state.lat_b = float(query_params["peer_lat"])
+        st.session_state.lon_b = float(query_params["peer_lon"])
+        st.session_state.h_b = float(query_params["peer_h"])
+        
+        # Clear the params so it doesn't snap back if changed manually later
+        st.query_params.clear() 
         st.toast("✅ Peer Site B Location Loaded!")
-    except: pass
+    except Exception as e:
+        st.error(f"Failed to load peer location: {e}")
 
 # --- 2. HELPER FUNCTIONS ---
 
@@ -149,8 +155,9 @@ curr_url = streamlit_js_eval(js_expressions="window.location.href", want_output=
 if curr_url:
     base = curr_url.split("?")[0]
     s_url = f"{base}?peer_lat={st.session_state.lat_a}&peer_lon={st.session_state.lon_a}&peer_h={st.session_state.h_a}"
-    wa = f"https://wa.me/?text={urllib.parse.quote('Connect to my RF link: ' + s_url)}"
-    st.sidebar.markdown(f'''<a href="{wa}" target="_blank" style="text-decoration:none;"><div style="background-color:#25D366;color:white;padding:12px;border-radius:8px;text-align:center;font-weight:bold;">📲 Share Location via WhatsApp</div></a>''', unsafe_allow_html=True)
+    message = f"Connect to my RF link: {s_url}"
+    wa_link = f"https://wa.me/?text={urllib.parse.quote(message)}"
+    st.sidebar.markdown(f'''<a href="{wa_link}" target="_blank" style="text-decoration:none;"><div style="background-color:#25D366;color:white;padding:12px;border-radius:8px;text-align:center;font-weight:bold;">📲 Share Location via WhatsApp</div></a>''', unsafe_allow_html=True)
 else:
     st.sidebar.info("⏳ Initializing Share Link...")
 
@@ -227,7 +234,6 @@ with col2:
                 # --- PDF GENERATION ENGINE ---
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     profile_path = os.path.join(tmp_dir, "profile.png")
-                    # kaleido saves the plotly figure to an image
                     fig.write_image(profile_path, width=1000, height=500)
                     
                     st.session_state.pdf_data = generate_pdf_report(
@@ -236,7 +242,6 @@ with col2:
                         dist/1000, freq, profile_path, df_att
                     )
 
-    # Place Download Button outside the calculation loop so it persists
     if st.session_state.pdf_data:
         st.divider()
         st.download_button(
