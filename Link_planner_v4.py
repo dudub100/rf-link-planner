@@ -13,18 +13,17 @@ import tempfile
 import os
 import re
 import urllib.parse
-from streamlit_js_eval import get_geolocation
+from streamlit_js_eval import streamlit_js_eval, get_geolocation
 
 # --- 1. CONFIG & SESSION STATE ---
 st.set_page_config(layout="wide", page_title="RF Link Profiler Pro")
 
-# Bulletproof URL Parameter Parser (Fixes the "Blank Screen" crash)
+# Bulletproof URL Parameter Parser
 def get_safe_param(key, default):
     try:
-        val = st.query_params.get(key)
-        if val:
+        if key in st.query_params:
+            val = st.query_params[key]
             if isinstance(val, list): val = val[0]
-            # Strip everything except numbers, dots, and minus
             clean_val = re.sub(r'[^\d\.\-]', '', str(val))
             if clean_val: return float(clean_val)
     except: pass
@@ -43,7 +42,7 @@ if "gps_requested" not in st.session_state: st.session_state.gps_requested = Fal
 if "pdf_data" not in st.session_state: st.session_state.pdf_data = None
 if "peer_loaded" not in st.session_state: st.session_state.peer_loaded = False
 
-# --- 2. ROBUST DEEP-LINKING (Read URL on Startup) ---
+# --- 2. ROBUST DEEP-LINKING ---
 if "peer_lat" in st.query_params and not st.session_state.peer_loaded:
     st.session_state.lat_b = get_safe_param("peer_lat", st.session_state.lat_b)
     st.session_state.lon_b = get_safe_param("peer_lon", st.session_state.lon_b)
@@ -52,7 +51,6 @@ if "peer_lat" in st.query_params and not st.session_state.peer_loaded:
     st.toast("✅ Peer Location Synchronized!", icon="📡")
 
 # --- 3. HELPER FUNCTIONS ---
-
 def fetch_weather(lat, lon):
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m"
@@ -105,9 +103,9 @@ def generate_pdf_report(lat_a, lon_a, lat_b, lon_b, d_km, f_ghz, profile_img_pat
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", "B", 16); pdf.cell(0, 10, "RF Link Path Profile Report", align="C", ln=True)
-    pdf.set_font("helvetica", "", 10); pdf.cell(0, 8, f"Path Distance: {d_km:.3f} km | Freq: {f_ghz} GHz", ln=True)
+    pdf.set_font("helvetica", "", 10); pdf.cell(0, 8, f"Distance: {d_km:.3f} km | Freq: {f_ghz} GHz", ln=True)
     pdf.image(profile_img_path, x=10, w=190); pdf.ln(5)
-    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "ITU-R Estimated Link Budget", ln=True)
+    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "Estimated Link Budget", ln=True)
     pdf.set_font("helvetica", "", 8)
     for col in list(df_att.columns): pdf.cell(31, 8, col, border=1, align="C")
     pdf.ln()
@@ -120,6 +118,7 @@ def generate_pdf_report(lat_a, lon_a, lat_b, lon_b, d_km, f_ghz, profile_img_pat
 st.sidebar.title("📡 Field Tools")
 click_target = st.sidebar.radio("Map Click Updates:", ["None", "Site A", "Site B"])
 
+# GPS Logic
 if st.sidebar.button("📍 Set Site A to My Location"):
     st.session_state.gps_requested = True
     st.rerun()
@@ -142,21 +141,26 @@ if st.sidebar.button("☁️ Sync Local Weather"):
 
 st.sidebar.divider()
 
-# --- FIX: ROBUST WHATSAPP SHARE ---
-# We use a manual text box as a fallback if the auto-detection fails
-app_url = st.sidebar.text_input("App Base URL (Verify this is correct):", value="https://rf-link-planner.streamlit.app/")
+# --- DYNAMIC WHATSAPP URL DETECTION ---
+# Using window.parent.location.href to grab the ACTUAL browser address
+actual_browser_url = streamlit_js_eval(js_expressions="window.parent.location.href", want_output=True, key="get_parent_url")
 
-share_link = f"{app_url}?peer_lat={st.session_state.lat_a}&peer_lon={st.session_state.lon_a}&peer_h={st.session_state.h_a}"
-wa_msg = urllib.parse.quote(f"Connect to my RF link: {share_link}")
-wa_url = f"https://wa.me/?text={wa_msg}"
+if actual_browser_url:
+    # Clean up any existing parameters from the URL
+    clean_base_url = actual_browser_url.split('?')[0]
+    share_link = f"{clean_base_url}?peer_lat={st.session_state.lat_a}&peer_lon={st.session_state.lon_a}&peer_h={st.session_state.h_a}"
+    wa_msg = urllib.parse.quote(f"Connect to my RF link: {share_link}")
+    wa_url = f"https://wa.me/?text={wa_msg}"
 
-st.sidebar.markdown(f'''
-    <a href="{wa_url}" target="_blank" style="text-decoration:none;">
-        <div style="background-color:#25D366; color:white; padding:12px; border-radius:8px; text-align:center; font-weight:bold;">
-            📲 Share Site A via WhatsApp
-        </div>
-    </a>
-''', unsafe_allow_html=True)
+    st.sidebar.markdown(f'''
+        <a href="{wa_url}" target="_blank" style="text-decoration:none;">
+            <div style="background-color:#25D366; color:white; padding:12px; border-radius:8px; text-align:center; font-weight:bold;">
+                📲 Share Site A via WhatsApp
+            </div>
+        </a>
+    ''', unsafe_allow_html=True)
+else:
+    st.sidebar.info("⏳ Initializing Share Link...")
 
 st.sidebar.divider()
 
