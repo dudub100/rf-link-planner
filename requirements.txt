@@ -10,4 +10,4 @@ itur
 astropy
 fpdf2
 kaleido
-stramlit-js-eval
+streamlit-js-eval
