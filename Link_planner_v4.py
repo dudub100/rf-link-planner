@@ -115,7 +115,7 @@ if current_url:
     st.sidebar.markdown(f'''<a href="{wa_link}" target="_blank" style="text-decoration: none;">
         <div style="background-color: #25D366; color: white; padding: 10px; border-radius: 5px; text-align: center;">
             Share Site A via WhatsApp
-        </div></a>''', unsafe_allow_name=True)
+        </div></a>''', unsafe_allow_html=True)
 
 # --- [REST OF YOUR EXISTING RF PARAMETERS & MAIN LAYOUT] ---
 # ... (Continue with Frequency, Gain, and the Main Plotly/Map logic) ...
