@@ -12,41 +12,38 @@ from fpdf import FPDF
 import tempfile
 import os
 import re
-import streamlit.components.v1 as components
+import urllib.parse
 from streamlit_js_eval import get_geolocation
 
-# --- 1. INITIAL SETUP (MUST BE FIRST) ---
+# --- 1. CONFIG & SESSION STATE ---
 st.set_page_config(layout="wide", page_title="RF Link Profiler Pro")
 
-# Bulletproof URL Parameter Parser (Strips WhatsApp's weird trailing characters)
+# Bulletproof URL Parameter Parser (Fixes the "Blank Screen" crash)
 def get_safe_param(key, default):
     try:
-        if key in st.query_params:
-            val = st.query_params[key]
+        val = st.query_params.get(key)
+        if val:
             if isinstance(val, list): val = val[0]
-            # Strip EVERYTHING except numbers, decimals, and minus signs
+            # Strip everything except numbers, dots, and minus
             clean_val = re.sub(r'[^\d\.\-]', '', str(val))
             if clean_val: return float(clean_val)
-    except Exception as e:
-        pass
+    except: pass
     return float(default)
 
-# --- 2. SESSION STATE INITIALIZATION ---
+# Session State Initialization
 if "lat_a" not in st.session_state: st.session_state.lat_a = 40.7128
 if "lon_a" not in st.session_state: st.session_state.lon_a = -74.0060
 if "h_a" not in st.session_state: st.session_state.h_a = 15.0
-
 if "lat_b" not in st.session_state: st.session_state.lat_b = 40.7306
 if "lon_b" not in st.session_state: st.session_state.lon_b = -73.9866
 if "h_b" not in st.session_state: st.session_state.h_b = 20.0
-
 if "env_temp" not in st.session_state: st.session_state.env_temp = 15.0
 if "env_rh" not in st.session_state: st.session_state.env_rh = 50.0
 if "gps_requested" not in st.session_state: st.session_state.gps_requested = False
 if "pdf_data" not in st.session_state: st.session_state.pdf_data = None
 if "peer_loaded" not in st.session_state: st.session_state.peer_loaded = False
 
-# --- 3. ROBUST DEEP-LINKING ---
+# --- 2. ROBUST DEEP-LINKING (Read URL on Startup) ---
 if "peer_lat" in st.query_params and not st.session_state.peer_loaded:
     st.session_state.lat_b = get_safe_param("peer_lat", st.session_state.lat_b)
     st.session_state.lon_b = get_safe_param("peer_lon", st.session_state.lon_b)
@@ -54,7 +51,8 @@ if "peer_lat" in st.query_params and not st.session_state.peer_loaded:
     st.session_state.peer_loaded = True
     st.toast("✅ Peer Location Synchronized!", icon="📡")
 
-# --- 4. RF & ELEVATION HELPERS ---
+# --- 3. HELPER FUNCTIONS ---
+
 def fetch_weather(lat, lon):
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m"
@@ -76,7 +74,6 @@ def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=50):
     distances = [0.0]
     for i in range(1, len(coords)):
         distances.append(distances[-1] + geodesic(coords[i-1], coords[i]).meters)
-
     loc_str = "|".join([f"{lat},{lon}" for lat, lon in coords])
     try:
         r = requests.get(f"https://api.opentopodata.org/v1/srtm30m?locations={loc_str}", timeout=10)
@@ -105,49 +102,21 @@ def calculate_itu_attenuation(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b, t
     return pd.DataFrame(results)
 
 def generate_pdf_report(lat_a, lon_a, lat_b, lon_b, d_km, f_ghz, profile_img_path, df_att):
-    class PDF(FPDF):
-        def header(self):
-            self.set_font("helvetica", "B", 16)
-            self.cell(0, 10, "RF Link Path Profile & Budget Report", align="C", ln=True)
-            self.line(10, 22, 200, 22); self.ln(5)
-    pdf = PDF()
+    pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "1. Link Overview", ln=True)
-    pdf.set_font("helvetica", "", 10)
-    pdf.cell(0, 8, f"Site A: {lat_a:.6f}, {lon_a:.6f} | Site B: {lat_b:.6f}, {lon_b:.6f}", ln=True)
-    pdf.cell(0, 8, f"Frequency: {f_ghz} GHz | Path Distance: {d_km:.3f} km", ln=True)
-    pdf.ln(5)
-    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "2. Terrain & Fresnel Profile", ln=True)
+    pdf.set_font("helvetica", "B", 16); pdf.cell(0, 10, "RF Link Path Profile Report", align="C", ln=True)
+    pdf.set_font("helvetica", "", 10); pdf.cell(0, 8, f"Path Distance: {d_km:.3f} km | Freq: {f_ghz} GHz", ln=True)
     pdf.image(profile_img_path, x=10, w=190); pdf.ln(5)
-    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "3. ITU-R Estimated Link Budget", ln=True)
-    pdf.set_font("helvetica", "B", 8)
+    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "ITU-R Estimated Link Budget", ln=True)
+    pdf.set_font("helvetica", "", 8)
     for col in list(df_att.columns): pdf.cell(31, 8, col, border=1, align="C")
     pdf.ln()
-    pdf.set_font("helvetica", "", 8)
     for row in df_att.itertuples(index=False):
         for item in row: pdf.cell(31, 8, str(item), border=1, align="C")
         pdf.ln()
     return bytes(pdf.output())
 
-# --- 5. NATIVE WHATSAPP SHARE BUTTON ---
-def render_whatsapp_button(lat, lon, h):
-    html_code = f"""
-    <a id="wa-link" href="#" target="_blank" style="text-decoration:none; display:block; background-color:#25D366; color:white; padding:12px; border-radius:8px; text-align:center; font-family:sans-serif; font-weight:bold;">
-        📲 Share via WhatsApp
-    </a>
-    <script>
-        // Native JS handles the URL instead of Python, preventing React crashes
-        setTimeout(function() {{
-            var base = window.location.href.split('?')[0];
-            var shareUrl = base + "?peer_lat={lat}&peer_lon={lon}&peer_h={h}";
-            var msg = encodeURIComponent("Connect to my RF link: " + shareUrl);
-            document.getElementById('wa-link').href = "https://wa.me/?text=" + msg;
-        }}, 200);
-    </script>
-    """
-    components.html(html_code, height=60)
-
-# --- 6. SIDEBAR TOOLS ---
+# --- 4. SIDEBAR TOOLS ---
 st.sidebar.title("📡 Field Tools")
 click_target = st.sidebar.radio("Map Click Updates:", ["None", "Site A", "Site B"])
 
@@ -173,8 +142,21 @@ if st.sidebar.button("☁️ Sync Local Weather"):
 
 st.sidebar.divider()
 
-# Call the safe HTML WhatsApp button
-render_whatsapp_button(st.session_state.lat_a, st.session_state.lon_a, st.session_state.h_a)
+# --- FIX: ROBUST WHATSAPP SHARE ---
+# We use a manual text box as a fallback if the auto-detection fails
+app_url = st.sidebar.text_input("App Base URL (Verify this is correct):", value="https://rf-link-planner.streamlit.app/")
+
+share_link = f"{app_url}?peer_lat={st.session_state.lat_a}&peer_lon={st.session_state.lon_a}&peer_h={st.session_state.h_a}"
+wa_msg = urllib.parse.quote(f"Connect to my RF link: {share_link}")
+wa_url = f"https://wa.me/?text={wa_msg}"
+
+st.sidebar.markdown(f'''
+    <a href="{wa_url}" target="_blank" style="text-decoration:none;">
+        <div style="background-color:#25D366; color:white; padding:12px; border-radius:8px; text-align:center; font-weight:bold;">
+            📲 Share Site A via WhatsApp
+        </div>
+    </a>
+''', unsafe_allow_html=True)
 
 st.sidebar.divider()
 
@@ -203,8 +185,8 @@ st.sidebar.subheader("Atmosphere")
 temp = st.sidebar.number_input("Temp (°C)", value=float(st.session_state.env_temp), format="%.1f")
 rh = st.sidebar.number_input("Humidity (%)", value=float(st.session_state.env_rh), format="%.1f")
 
-# --- 7. MAIN DISPLAY ---
-st.title("RF Path Profiler")
+# --- 5. MAIN DISPLAY ---
+st.title("RF Path Profiler & Multipath Viewer")
 c1, c2 = st.columns([1, 1])
 
 with c1:
@@ -213,15 +195,14 @@ with c1:
     folium.Marker([float(st.session_state.lat_b), float(st.session_state.lon_b)], icon=folium.Icon(color="red")).add_to(m)
     folium.PolyLine([(float(st.session_state.lat_a), float(st.session_state.lon_a)), (float(st.session_state.lat_b), float(st.session_state.lon_b))], color="blue").add_to(m)
     m_data = st_folium(m, height=500, width=700, key="rf_map")
-    
     if m_data and m_data.get("last_clicked"):
         lat, lon = m_data["last_clicked"]["lat"], m_data["last_clicked"]["lng"]
         if click_target == "Site A": st.session_state.lat_a, st.session_state.lon_a = lat, lon; st.rerun()
-        if click_target == "Site B": st.session_state.lat_b, st.session_state.lon_b = lat, lon; st.rerun()
+        elif click_target == "Site B": st.session_state.lat_b, st.session_state.lon_b = lat, lon; st.rerun()
 
 with c2:
-    if st.button("🚀 Calculate Link"):
-        with st.spinner("Analyzing..."):
+    if st.button("🚀 Calculate Profile"):
+        with st.spinner("Analyzing Terrain..."):
             df = get_elevation_profile(st.session_state.lat_a, st.session_state.lon_a, st.session_state.lat_b, st.session_state.lon_b)
             if df is not None:
                 dist = df.iloc[-1]["Distance (m)"]
@@ -230,9 +211,11 @@ with c2:
                 df["F1"] = 17.32 * np.sqrt(((df["Distance (m)"]/1000)*((dist-df["Distance (m)"])/1000))/(freq*(dist/1000)))
                 
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["Elevation (m)"], fill='tozeroy', name='Terrain'))
+                fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["Elevation (m)"], fill='tozeroy', name='Terrain', line=dict(color='SaddleBrown')))
                 fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"], name='LOS', line=dict(color='red', dash='dash')))
-                fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"]-df["F1"], fill='tonexty', name='1st Fresnel'))
+                fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"]-df["F1"], fill='tonexty', name='1st Fresnel', line=dict(color='rgba(0,0,255,0.1)')))
+                
+                fig.update_layout(title="Elevation Profile (m)", xaxis_title="Distance (m)", yaxis_title="Elevation (m)", margin=dict(l=0,r=0,t=40,b=0))
                 st.plotly_chart(fig, use_container_width=True)
                 
                 df_att = calculate_itu_attenuation(st.session_state.lat_a, st.session_state.lon_a, dist/1000, freq, tx_p, gain_a, gain_b, temp, rh)
@@ -244,4 +227,4 @@ with c2:
                     st.session_state.pdf_data = generate_pdf_report(st.session_state.lat_a, st.session_state.lon_a, st.session_state.lat_b, st.session_state.lon_b, dist/1000, freq, img_path, df_att)
 
     if st.session_state.pdf_data:
-        st.download_button("📄 Download PDF", st.session_state.pdf_data, "RF_Report.pdf")
+        st.download_button("📄 Download PDF Report", st.session_state.pdf_data, "RF_Report.pdf")
