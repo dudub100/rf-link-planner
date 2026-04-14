@@ -14,37 +14,44 @@ import os
 import urllib.parse
 from streamlit_js_eval import streamlit_js_eval, get_geolocation
 
-# --- 1. CONFIG & SESSION STATE ---
+# --- 1. INITIAL SETUP (MUST BE FIRST) ---
 st.set_page_config(layout="wide", page_title="RF Link Profiler Pro")
 
-# Initialize persistent session state
+# Helper to safely get one number from URL params (Fixes the Safari Blank Page)
+def get_safe_param(key, default):
+    try:
+        val = st.query_params.get(key)
+        if val is None: return default
+        # Handle cases where param might be a list or a single string
+        if isinstance(val, list): val = val[0]
+        return float(val)
+    except:
+        return default
+
+# --- 2. SESSION STATE INITIALIZATION ---
 if "lat_a" not in st.session_state: st.session_state.lat_a = 40.7128
 if "lon_a" not in st.session_state: st.session_state.lon_a = -74.0060
 if "h_a" not in st.session_state: st.session_state.h_a = 15.0
+
 if "lat_b" not in st.session_state: st.session_state.lat_b = 40.7306
 if "lon_b" not in st.session_state: st.session_state.lon_b = -73.9866
 if "h_b" not in st.session_state: st.session_state.h_b = 20.0
+
 if "env_temp" not in st.session_state: st.session_state.env_temp = 15.0
 if "env_rh" not in st.session_state: st.session_state.env_rh = 50.0
 if "gps_requested" not in st.session_state: st.session_state.gps_requested = False
 if "pdf_data" not in st.session_state: st.session_state.pdf_data = None
 if "peer_loaded" not in st.session_state: st.session_state.peer_loaded = False
 
-# --- ROBUST DEEP-LINKING LOGIC (SAFARI SAFE) ---
+# --- 3. ROBUST DEEP-LINKING (Logic to catch WhatsApp link data) ---
 if "peer_lat" in st.query_params and not st.session_state.peer_loaded:
-    try:
-        # Load peer coordinates into Site B
-        st.session_state.lat_b = float(st.query_params.get("peer_lat", st.session_state.lat_b))
-        st.session_state.lon_b = float(st.query_params.get("peer_lon", st.session_state.lon_b))
-        st.session_state.h_b = float(st.query_params.get("peer_h", st.session_state.h_b))
-        
-        # Mark as loaded so it doesn't snap back if changed manually later
-        st.session_state.peer_loaded = True 
-        st.toast("✅ Peer Site B Location Loaded!")
-    except Exception:
-        pass # Fail silently so the app never white-screens
+    st.session_state.lat_b = get_safe_param("peer_lat", st.session_state.lat_b)
+    st.session_state.lon_b = get_safe_param("peer_lon", st.session_state.lon_b)
+    st.session_state.h_b = get_safe_param("peer_h", st.session_state.h_b)
+    st.session_state.peer_loaded = True
+    st.toast("✅ Peer Location Synchronized!")
 
-# --- 2. HELPER FUNCTIONS ---
+# --- 4. RF & ELEVATION HELPERS ---
 
 def fetch_weather(lat, lon):
     try:
@@ -122,23 +129,23 @@ def generate_pdf_report(lat_a, lon_a, lat_b, lon_b, d_km, f_ghz, profile_img_pat
         pdf.ln()
     return bytes(pdf.output())
 
-# --- 3. GPS HANDSHAKE ---
-loc = get_geolocation()
-if st.session_state.gps_requested and loc:
-    st.session_state.lat_a = loc['coords']['latitude']
-    st.session_state.lon_a = loc['coords']['longitude']
-    alt = loc['coords']['altitude'] if loc['coords']['altitude'] else 0
-    ground = get_ground_elevation(st.session_state.lat_a, st.session_state.lon_a)
-    st.session_state.h_a = round(float(max(5.0, alt - ground)), 1)
-    st.session_state.gps_requested = False
-    st.rerun()
-
-# --- 4. SIDEBAR ---
+# --- 5. SIDEBAR TOOLS ---
 st.sidebar.title("📡 Field Tools")
 click_target = st.sidebar.radio("Map Click Updates:", ["None", "Site A", "Site B"])
 
 if st.sidebar.button("📍 Set Site A to My Location"):
     st.session_state.gps_requested = True
+    st.rerun()
+
+# Handle GPS result (if requested)
+loc_data = get_geolocation()
+if st.session_state.gps_requested and loc_data:
+    st.session_state.lat_a = loc_data['coords']['latitude']
+    st.session_state.lon_a = loc_data['coords']['longitude']
+    alt = loc_data['coords']['altitude'] if loc_data['coords']['altitude'] else 0
+    ground = get_ground_elevation(st.session_state.lat_a, st.session_state.lon_a)
+    st.session_state.h_a = round(float(max(5.0, alt - ground)), 1)
+    st.session_state.gps_requested = False
     st.rerun()
 
 if st.sidebar.button("☁️ Sync Local Weather"):
@@ -149,103 +156,84 @@ if st.sidebar.button("☁️ Sync Local Weather"):
 
 st.sidebar.divider()
 
-# WhatsApp Share
+# Share URL Logic
 curr_url = streamlit_js_eval(js_expressions="window.location.href", want_output=True, key="get_url")
 if curr_url:
     base = curr_url.split("?")[0]
-    s_url = f"{base}?peer_lat={st.session_state.lat_a}&peer_lon={st.session_state.lon_a}&peer_h={st.session_state.h_a}"
-    message = f"Connect to my RF link: {s_url}"
-    wa_link = f"https://wa.me/?text={urllib.parse.quote(message)}"
+    share_url = f"{base}?peer_lat={st.session_state.lat_a}&peer_lon={st.session_state.lon_a}&peer_h={st.session_state.h_a}"
+    msg = urllib.parse.quote(f"Connect to my RF link: {share_url}")
+    wa_link = f"https://wa.me/?text={msg}"
     st.sidebar.markdown(f'''<a href="{wa_link}" target="_blank" style="text-decoration:none;"><div style="background-color:#25D366;color:white;padding:12px;border-radius:8px;text-align:center;font-weight:bold;">📲 Share Location via WhatsApp</div></a>''', unsafe_allow_html=True)
 else:
     st.sidebar.info("⏳ Initializing Share Link...")
 
 st.sidebar.divider()
 
-# Site Details
+# Manual Site Inputs
 st.sidebar.subheader("Site A (Green)")
-st.session_state.lat_a = st.sidebar.number_input("Latitude A", value=float(st.session_state.lat_a), format="%.6f")
-st.session_state.lon_a = st.sidebar.number_input("Longitude A", value=float(st.session_state.lon_a), format="%.6f")
-st.session_state.h_a = st.sidebar.number_input("Antenna Height A (m)", value=float(st.session_state.h_a))
+st.session_state.lat_a = st.sidebar.number_input("Lat A", value=float(st.session_state.lat_a), format="%.6f")
+st.session_state.lon_a = st.sidebar.number_input("Lon A", value=float(st.session_state.lon_a), format="%.6f")
+st.session_state.h_a = st.sidebar.number_input("Height A (m)", value=float(st.session_state.h_a))
 
 st.sidebar.subheader("Site B (Red)")
-st.session_state.lat_b = st.sidebar.number_input("Latitude B", value=float(st.session_state.lat_b), format="%.6f")
-st.session_state.lon_b = st.sidebar.number_input("Longitude B", value=float(st.session_state.lon_b), format="%.6f")
-st.session_state.h_b = st.sidebar.number_input("Antenna Height B (m)", value=float(st.session_state.h_b))
+st.session_state.lat_b = st.sidebar.number_input("Lat B", value=float(st.session_state.lat_b), format="%.6f")
+st.session_state.lon_b = st.sidebar.number_input("Lon B", value=float(st.session_state.lon_b), format="%.6f")
+st.session_state.h_b = st.sidebar.number_input("Height B (m)", value=float(st.session_state.h_b))
 
 st.sidebar.divider()
 
-# RF Parameters
+# RF & Atmosphere
 st.sidebar.subheader("RF Parameters")
-freq = st.sidebar.number_input("Frequency (GHz)", value=15.0, min_value=0.1, step=0.1)
-tx_pwr = st.sidebar.number_input("Transmit Power (dBm)", value=20.0, step=1.0)
-
-wl = 0.3 / freq
-diam_a = st.sidebar.number_input("Dish A Diameter (m)", value=0.6, step=0.1)
-gain_a = 10 * np.log10(0.55 * (np.pi * diam_a / wl)**2)
-st.sidebar.caption(f"Calculated Gain A: {gain_a:.1f} dBi")
-
-diam_b = st.sidebar.number_input("Dish B Diameter (m)", value=0.6, step=0.1)
-gain_b = 10 * np.log10(0.55 * (np.pi * diam_b / wl)**2)
-st.sidebar.caption(f"Calculated Gain B: {gain_b:.1f} dBi")
+freq = st.sidebar.number_input("Frequency (GHz)", value=15.0, min_value=0.1)
+tx_p = st.sidebar.number_input("TX Power (dBm)", value=20.0)
+diam_a = st.sidebar.number_input("Dish A (m)", value=0.6)
+gain_a = 10 * np.log10(0.55 * (np.pi * diam_a / (0.3/freq))**2)
+diam_b = st.sidebar.number_input("Dish B (m)", value=0.6)
+gain_b = 10 * np.log10(0.55 * (np.pi * diam_b / (0.3/freq))**2)
 
 st.sidebar.subheader("Atmosphere")
-temp = st.sidebar.number_input("Temperature (°C)", value=float(st.session_state.env_temp), format="%.1f")
-rh = st.sidebar.number_input("Relative Humidity (%)", value=float(st.session_state.env_rh), format="%.1f")
+temp = st.sidebar.number_input("Temp (°C)", value=float(st.session_state.env_temp), format="%.1f")
+rh = st.sidebar.number_input("Humidity (%)", value=float(st.session_state.env_rh), format="%.1f")
 
-# --- 5. MAIN UI ---
-st.title("RF Path Profiler & Link Budget Tool")
-col1, col2 = st.columns([1, 1])
+# --- 6. MAIN DISPLAY ---
+st.title("RF Path Profiler")
+c1, c2 = st.columns([1, 1])
 
-with col1:
+with c1:
     m = folium.Map(location=[st.session_state.lat_a, st.session_state.lon_a], zoom_start=12)
-    folium.Marker([st.session_state.lat_a, st.session_state.lon_a], icon=folium.Icon(color="green"), popup="Site A").add_to(m)
-    folium.Marker([st.session_state.lat_b, st.session_state.lon_b], icon=folium.Icon(color="red"), popup="Site B").add_to(m)
+    folium.Marker([st.session_state.lat_a, st.session_state.lon_a], icon=folium.Icon(color="green")).add_to(m)
+    folium.Marker([st.session_state.lat_b, st.session_state.lon_b], icon=folium.Icon(color="red")).add_to(m)
     folium.PolyLine([(st.session_state.lat_a, st.session_state.lon_a), (st.session_state.lat_b, st.session_state.lon_b)], color="blue").add_to(m)
     m_data = st_folium(m, height=500, width=700, key="rf_map")
+    
     if m_data and m_data.get("last_clicked"):
         lat, lon = m_data["last_clicked"]["lat"], m_data["last_clicked"]["lng"]
         if click_target == "Site A": st.session_state.lat_a, st.session_state.lon_a = lat, lon; st.rerun()
         if click_target == "Site B": st.session_state.lat_b, st.session_state.lon_b = lat, lon; st.rerun()
 
-with col2:
-    if st.button("🚀 Calculate Link Parameters"):
-        with st.spinner("Analyzing Terrain Profile..."):
+with c2:
+    if st.button("🚀 Calculate Link"):
+        with st.spinner("Analyzing..."):
             df = get_elevation_profile(st.session_state.lat_a, st.session_state.lon_a, st.session_state.lat_b, st.session_state.lon_b)
             if df is not None:
                 dist = df.iloc[-1]["Distance (m)"]
-                abs_a = df.iloc[0]["Elevation (m)"] + st.session_state.h_a
-                abs_b = df.iloc[-1]["Elevation (m)"] + st.session_state.h_b
+                abs_a, abs_b = df.iloc[0]["Elevation (m)"]+st.session_state.h_a, df.iloc[-1]["Elevation (m)"]+st.session_state.h_b
                 df["LOS"] = np.linspace(abs_a, abs_b, len(df))
-                df["F1"] = 17.32 * np.sqrt(((df["Distance (m)"]/1000) * ((dist-df["Distance (m)"])/1000)) / (freq * (dist/1000)))
+                df["F1"] = 17.32 * np.sqrt(((df["Distance (m)"]/1000)*((dist-df["Distance (m)"])/1000))/(freq*(dist/1000)))
                 
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["Elevation (m)"], fill='tozeroy', name='Terrain', line=dict(color='SaddleBrown')))
+                fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["Elevation (m)"], fill='tozeroy', name='Terrain'))
                 fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"], name='LOS', line=dict(color='red', dash='dash')))
-                fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"]-df["F1"], fill='tonexty', name='1st Fresnel', line=dict(color='rgba(0,0,255,0.1)')))
-                
-                fig.update_layout(title="Path Elevation Profile (m)", xaxis_title="Distance (m)", yaxis_title="Elevation (m)", margin=dict(l=0,r=0,t=40,b=0))
+                fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"]-df["F1"], fill='tonexty', name='1st Fresnel'))
                 st.plotly_chart(fig, use_container_width=True)
                 
-                df_att = calculate_itu_attenuation(st.session_state.lat_a, st.session_state.lon_a, dist/1000, freq, tx_pwr, gain_a, gain_b, temp, rh)
+                df_att = calculate_itu_attenuation(st.session_state.lat_a, st.session_state.lon_a, dist/1000, freq, tx_p, gain_a, gain_b, temp, rh)
                 st.dataframe(df_att, hide_index=True)
-
-                # --- PDF GENERATION ENGINE ---
-                with tempfile.TemporaryDirectory() as tmp_dir:
-                    profile_path = os.path.join(tmp_dir, "profile.png")
-                    fig.write_image(profile_path, width=1000, height=500)
-                    
-                    st.session_state.pdf_data = generate_pdf_report(
-                        st.session_state.lat_a, st.session_state.lon_a,
-                        st.session_state.lat_b, st.session_state.lon_b,
-                        dist/1000, freq, profile_path, df_att
-                    )
+                
+                with tempfile.TemporaryDirectory() as tmp:
+                    img_path = os.path.join(tmp, "p.png")
+                    fig.write_image(img_path)
+                    st.session_state.pdf_data = generate_pdf_report(st.session_state.lat_a, st.session_state.lon_a, st.session_state.lat_b, st.session_state.lon_b, dist/1000, freq, img_path, df_att)
 
     if st.session_state.pdf_data:
-        st.divider()
-        st.download_button(
-            label="📄 Download Professional PDF Report",
-            data=st.session_state.pdf_data,
-            file_name="RF_Link_Analysis.pdf",
-            mime="application/pdf"
-        )
+        st.download_button("📄 Download PDF", st.session_state.pdf_data, "RF_Report.pdf")
