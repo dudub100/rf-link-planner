@@ -17,15 +17,13 @@ from streamlit_js_eval import streamlit_js_eval, get_geolocation
 # --- 1. CONFIG & SESSION STATE ---
 st.set_page_config(layout="wide", page_title="RF Link Profiler Pro")
 
-# Initialize persistent session state for all parameters
+# Initialize persistent session state
 if "lat_a" not in st.session_state: st.session_state.lat_a = 40.7128
 if "lon_a" not in st.session_state: st.session_state.lon_a = -74.0060
 if "h_a" not in st.session_state: st.session_state.h_a = 15.0
-
 if "lat_b" not in st.session_state: st.session_state.lat_b = 40.7306
 if "lon_b" not in st.session_state: st.session_state.lon_b = -73.9866
 if "h_b" not in st.session_state: st.session_state.h_b = 20.0
-
 if "env_temp" not in st.session_state: st.session_state.env_temp = 15.0
 if "env_rh" not in st.session_state: st.session_state.env_rh = 50.0
 if "gps_requested" not in st.session_state: st.session_state.gps_requested = False
@@ -38,7 +36,7 @@ if "peer_lat" in params:
         st.session_state.lat_b = float(params["peer_lat"])
         st.session_state.lon_b = float(params["peer_lon"])
         st.session_state.h_b = float(params["peer_h"])
-        st.toast("✅ Peer Site B Loaded!")
+        st.toast("✅ Peer Site B Location Loaded!")
     except: pass
 
 # --- 2. HELPER FUNCTIONS ---
@@ -80,36 +78,18 @@ def calculate_itu_attenuation(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b, t
     e_s = 6.1121 * np.exp((17.502 * t_c) / (240.97 + t_c))
     e = e_s * (rh / 100.0)
     rho = 216.7 * (e / (t_c + 273.15))
-    
     try:
         gas_loss = float(itur.models.itu676.gaseous_attenuation_terrestrial_path(
             r=d_km*u.km, f=f_ghz*u.GHz, el=0.0*u.deg, rho=rho*(u.g/u.m**3), P=1013.25*u.hPa, T=t_c*u.deg_C, mode='approx').value)
     except: gas_loss = 0.0
-        
-    results = []
     rsl_clear = tx_power + gain_a + gain_b - fsl - gas_loss
+    results = []
     for avail in [99.0, 99.9, 99.99, 99.999]:
         p = round(100.0 - avail, 3) 
-        try:
-            rain = float(itur.models.itu530.rain_attenuation(lat=lat, lon=lon, d=d_km*u.km, f=f_ghz*u.GHz, el=0.0*u.deg, p=p).value)
+        try: rain = float(itur.models.itu530.rain_attenuation(lat=lat, lon=lon, d=d_km*u.km, f=f_ghz*u.GHz, el=0.0*u.deg, p=p).value)
         except: rain = 0.0
         results.append({"Avail.": f"{avail}%", "FSL (dB)": f"{fsl:.1f}", "Atm. (dB)": f"{gas_loss:.2f}", "Rain (dB)": f"{rain:.1f}", "Clear RSL": f"{rsl_clear:.1f} dBm", "Faded RSL": f"{rsl_clear-rain:.1f} dBm"})
     return pd.DataFrame(results)
-
-def generate_pdf_report(site_a, site_b, d_km, f_ghz, profile_img, df_att):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("helvetica", "B", 16); pdf.cell(0, 10, "RF Link Path Profile Report", align="C", ln=True)
-    pdf.set_font("helvetica", "", 10); pdf.cell(0, 8, f"Link Distance: {d_km:.3f} km | Freq: {f_ghz} GHz", ln=True)
-    pdf.image(profile_img, x=10, w=190); pdf.ln(5)
-    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "Estimated Link Budget", ln=True)
-    pdf.set_font("helvetica", "", 8)
-    for col in df_att.columns: pdf.cell(31, 8, col, border=1)
-    pdf.ln()
-    for row in df_att.itertuples(index=False):
-        for item in row: pdf.cell(31, 8, str(item), border=1)
-        pdf.ln()
-    return bytes(pdf.output())
 
 # --- 3. GPS HANDSHAKE ---
 loc = get_geolocation()
@@ -126,65 +106,71 @@ if st.session_state.gps_requested and loc:
 st.sidebar.title("📡 Field Tools")
 click_target = st.sidebar.radio("Map Click Updates:", ["None", "Site A", "Site B"])
 
-col_gps, col_weather = st.sidebar.columns(2)
-if col_gps.button("📍 My GPS"): st.session_state.gps_requested = True; st.rerun()
-if col_weather.button("☁️ Weather"):
-    w = fetch_weather(st.session_state.lat_a, st.session_state.lon_a)
-    if w: st.session_state.env_temp, st.session_state.env_rh = w['temp'], w['rh']; st.rerun()
+# GPS and Weather with descriptive names
+if st.sidebar.button("📍 Set Site A to My Location"):
+    st.session_state.gps_requested = True
+    st.rerun()
 
-# WhatsApp
+if st.sidebar.button("☁️ Sync Local Weather"):
+    w = fetch_weather(st.session_state.lat_a, st.session_state.lon_a)
+    if w:
+        st.session_state.env_temp, st.session_state.env_rh = w['temp'], w['rh']
+        st.rerun()
+
+st.sidebar.divider()
+
+# WhatsApp Share - Improved visibility
 curr_url = streamlit_js_eval(js_expressions="window.location.href", want_output=True, key="get_url")
 if curr_url:
     base = curr_url.split("?")[0]
     s_url = f"{base}?peer_lat={st.session_state.lat_a}&peer_lon={st.session_state.lon_a}&peer_h={st.session_state.h_a}"
-    wa = f"https://wa.me/?text={urllib.parse.quote('Connect to my link: ' + s_url)}"
-    st.sidebar.markdown(f'''<a href="{wa}" target="_blank" style="text-decoration:none;"><div style="background-color:#25D366;color:white;padding:8px;border-radius:5px;text-align:center;font-weight:bold;">📲 Share with Peer</div></a>''', unsafe_allow_html=True)
+    wa = f"https://wa.me/?text={urllib.parse.quote('Connect to my RF link: ' + s_url)}"
+    st.sidebar.markdown(f'''<a href="{wa}" target="_blank" style="text-decoration:none;"><div style="background-color:#25D366;color:white;padding:12px;border-radius:8px;text-align:center;font-weight:bold;">📲 Share Location via WhatsApp</div></a>''', unsafe_allow_html=True)
+else:
+    st.sidebar.info("⏳ Initializing Share Link...")
 
 st.sidebar.divider()
 
-# Site A
+# Site Details
 st.sidebar.subheader("Site A (Green)")
-st.session_state.lat_a = st.sidebar.number_input("Lat A", value=st.session_state.lat_a, format="%.6f")
-st.session_state.lon_a = st.sidebar.number_input("Lon A", value=st.session_state.lon_a, format="%.6f")
-st.session_state.h_a = st.sidebar.number_input("H (AGL) A", value=st.session_state.h_a)
+st.session_state.lat_a = st.sidebar.number_input("Latitude A", value=float(st.session_state.lat_a), format="%.6f")
+st.session_state.lon_a = st.sidebar.number_input("Longitude A", value=float(st.session_state.lon_a), format="%.6f")
+st.session_state.h_a = st.sidebar.number_input("Antenna Height A (m)", value=float(st.session_state.h_a))
 
-# Site B
 st.sidebar.subheader("Site B (Red)")
-st.session_state.lat_b = st.sidebar.number_input("Lat B", value=st.session_state.lat_b, format="%.6f")
-st.session_state.lon_b = st.sidebar.number_input("Lon B", value=st.session_state.lon_b, format="%.6f")
-st.session_state.h_b = st.sidebar.number_input("H (AGL) B", value=st.session_state.h_b)
+st.session_state.lat_b = st.sidebar.number_input("Latitude B", value=float(st.session_state.lat_b), format="%.6f")
+st.session_state.lon_b = st.sidebar.number_input("Longitude B", value=float(st.session_state.lon_b), format="%.6f")
+st.session_state.h_b = st.sidebar.number_input("Antenna Height B (m)", value=float(st.session_state.h_b))
 
 st.sidebar.divider()
 
 # RF Parameters
-st.sidebar.subheader("RF & Antennas")
-freq = st.sidebar.number_input("Frequency (GHz)", value=15.0, step=0.1)
-pwr = st.sidebar.number_input("TX Power (dBm)", value=20.0)
+st.sidebar.subheader("RF Parameters")
+freq = st.sidebar.number_input("Frequency (GHz)", value=15.0, min_value=0.1, step=0.1)
+tx_pwr = st.sidebar.number_input("Transmit Power (dBm)", value=20.0, step=1.0)
+
 wl = 0.3 / freq
-
-diam_a = st.sidebar.number_input("Dish A (m)", value=0.6)
+diam_a = st.sidebar.number_input("Dish A Diameter (m)", value=0.6, step=0.1)
 gain_a = 10 * np.log10(0.55 * (np.pi * diam_a / wl)**2)
-hpbw_a = 70.0 * (wl / diam_a)
-st.sidebar.caption(f"Gain A: {gain_a:.1f} dBi | BW: {hpbw_a:.2f}°")
+st.sidebar.caption(f"Calculated Gain A: {gain_a:.1f} dBi")
 
-diam_b = st.sidebar.number_input("Dish B (m)", value=0.6)
+diam_b = st.sidebar.number_input("Dish B Diameter (m)", value=0.6, step=0.1)
 gain_b = 10 * np.log10(0.55 * (np.pi * diam_b / wl)**2)
-hpbw_b = 70.0 * (wl / diam_b)
-st.sidebar.caption(f"Gain B: {gain_b:.1f} dBi | BW: {hpbw_b:.2f}°")
+st.sidebar.caption(f"Calculated Gain B: {gain_b:.1f} dBi")
 
-temp = st.sidebar.number_input("Temp (°C)", value=float(st.session_state.env_temp), format="%.1f")
-rh = st.sidebar.number_input("Humidity (%)", value=float(st.session_state.env_rh), format="%.1f")
+st.sidebar.subheader("Atmosphere")
+temp = st.sidebar.number_input("Temperature (°C)", value=float(st.session_state.env_temp), format="%.1f")
+rh = st.sidebar.number_input("Relative Humidity (%)", value=float(st.session_state.env_rh), format="%.1f")
 
 # --- 5. MAIN UI ---
-st.title("RF Path Profiler & Multipath Analyzer")
+st.title("RF Path Profiler & Link Budget Tool")
 col1, col2 = st.columns([1, 1])
 
 with col1:
     m = folium.Map(location=[st.session_state.lat_a, st.session_state.lon_a], zoom_start=12)
-    folium.Marker([st.session_state.lat_a, st.session_state.lon_a], icon=folium.Icon(color="green")).add_to(m)
-    folium.Marker([st.session_state.lat_b, st.session_state.lon_b], icon=folium.Icon(color="red")).add_to(m)
+    folium.Marker([st.session_state.lat_a, st.session_state.lon_a], icon=folium.Icon(color="green"), popup="Site A").add_to(m)
+    folium.Marker([st.session_state.lat_b, st.session_state.lon_b], icon=folium.Icon(color="red"), popup="Site B").add_to(m)
     folium.PolyLine([(st.session_state.lat_a, st.session_state.lon_a), (st.session_state.lat_b, st.session_state.lon_b)], color="blue").add_to(m)
-    
     m_data = st_folium(m, height=500, width=700, key="rf_map")
     if m_data and m_data.get("last_clicked"):
         lat, lon = m_data["last_clicked"]["lat"], m_data["last_clicked"]["lng"]
@@ -192,14 +178,13 @@ with col1:
         if click_target == "Site B": st.session_state.lat_b, st.session_state.lon_b = lat, lon; st.rerun()
 
 with col2:
-    if st.button("🚀 Calculate Profile"):
-        with st.spinner("Analyzing Terrain..."):
+    if st.button("🚀 Calculate Link Parameters"):
+        with st.spinner("Analyzing Terrain Profile..."):
             df = get_elevation_profile(st.session_state.lat_a, st.session_state.lon_a, st.session_state.lat_b, st.session_state.lon_b)
             if df is not None:
                 dist = df.iloc[-1]["Distance (m)"]
                 abs_a = df.iloc[0]["Elevation (m)"] + st.session_state.h_a
                 abs_b = df.iloc[-1]["Elevation (m)"] + st.session_state.h_b
-                
                 df["LOS"] = np.linspace(abs_a, abs_b, len(df))
                 df["F1"] = 17.32 * np.sqrt(((df["Distance (m)"]/1000) * ((dist-df["Distance (m)"])/1000)) / (freq * (dist/1000)))
                 
@@ -207,20 +192,7 @@ with col2:
                 fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["Elevation (m)"], fill='tozeroy', name='Terrain', line=dict(color='SaddleBrown')))
                 fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"], name='LOS', line=dict(color='red', dash='dash')))
                 fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"]-df["F1"], fill='tonexty', name='1st Fresnel', line=dict(color='rgba(0,0,255,0.1)')))
-                
-                # Simple Multipath Geometric Reflection Point
-                idx_mid = len(df)//2 # Placeholder for actual reflection math
-                fig.add_trace(go.Scatter(x=[0, df.iloc[idx_mid]["Distance (m)"], dist], y=[abs_a, df.iloc[idx_mid]["Elevation (m)"], abs_b], mode='lines', name='Reflected', line=dict(color='orange', dash='dot')))
-                
                 st.plotly_chart(fig, use_container_width=True)
                 
-                df_att = calculate_itu_attenuation(st.session_state.lat_a, st.session_state.lon_a, dist/1000, freq, pwr, gain_a, gain_b, temp, rh)
+                df_att = calculate_itu_attenuation(st.session_state.lat_a, st.session_state.lon_a, dist/1000, freq, tx_pwr, gain_a, gain_b, temp, rh)
                 st.dataframe(df_att, hide_index=True)
-                
-                with tempfile.TemporaryDirectory() as tmp:
-                    img_p = os.path.join(tmp, "p.png")
-                    fig.write_image(img_p)
-                    st.session_state.pdf_data = generate_pdf_report(st.session_state, st.session_state, dist/1000, freq, img_p, df_att)
-
-if st.session_state.pdf_data:
-    st.download_button("📄 Download PDF Report", st.session_state.pdf_data, "Link_Report.pdf")
