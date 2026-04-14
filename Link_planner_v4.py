@@ -91,6 +91,32 @@ def calculate_itu_attenuation(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b, t
         results.append({"Avail.": f"{avail}%", "FSL (dB)": f"{fsl:.1f}", "Atm. (dB)": f"{gas_loss:.2f}", "Rain (dB)": f"{rain:.1f}", "Clear RSL": f"{rsl_clear:.1f} dBm", "Faded RSL": f"{rsl_clear-rain:.1f} dBm"})
     return pd.DataFrame(results)
 
+def generate_pdf_report(lat_a, lon_a, lat_b, lon_b, d_km, f_ghz, profile_img_path, df_att):
+    class PDF(FPDF):
+        def header(self):
+            self.set_font("helvetica", "B", 16)
+            self.cell(0, 10, "RF Link Path Profile & Budget Report", align="C", ln=True)
+            self.line(10, 22, 200, 22); self.ln(5)
+    pdf = PDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "1. Link Overview", ln=True)
+    pdf.set_font("helvetica", "", 10)
+    pdf.cell(0, 8, f"Site A: {lat_a:.6f}, {lon_a:.6f} | Site B: {lat_b:.6f}, {lon_b:.6f}", ln=True)
+    pdf.cell(0, 8, f"Frequency: {f_ghz} GHz | Path Distance: {d_km:.3f} km", ln=True)
+    pdf.ln(5)
+    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "2. Terrain & Fresnel Profile", ln=True)
+    pdf.image(profile_img_path, x=10, w=190); pdf.ln(5)
+    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 10, "3. ITU-R Estimated Link Budget", ln=True)
+    pdf.set_font("helvetica", "B", 8)
+    cols = list(df_att.columns)
+    for col in cols: pdf.cell(31, 8, col, border=1, align="C")
+    pdf.ln()
+    pdf.set_font("helvetica", "", 8)
+    for row in df_att.itertuples(index=False):
+        for item in row: pdf.cell(31, 8, str(item), border=1, align="C")
+        pdf.ln()
+    return bytes(pdf.output())
+
 # --- 3. GPS HANDSHAKE ---
 loc = get_geolocation()
 if st.session_state.gps_requested and loc:
@@ -106,7 +132,6 @@ if st.session_state.gps_requested and loc:
 st.sidebar.title("📡 Field Tools")
 click_target = st.sidebar.radio("Map Click Updates:", ["None", "Site A", "Site B"])
 
-# GPS and Weather with descriptive names
 if st.sidebar.button("📍 Set Site A to My Location"):
     st.session_state.gps_requested = True
     st.rerun()
@@ -119,7 +144,7 @@ if st.sidebar.button("☁️ Sync Local Weather"):
 
 st.sidebar.divider()
 
-# WhatsApp Share - Improved visibility
+# WhatsApp Share
 curr_url = streamlit_js_eval(js_expressions="window.location.href", want_output=True, key="get_url")
 if curr_url:
     base = curr_url.split("?")[0]
@@ -192,7 +217,31 @@ with col2:
                 fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["Elevation (m)"], fill='tozeroy', name='Terrain', line=dict(color='SaddleBrown')))
                 fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"], name='LOS', line=dict(color='red', dash='dash')))
                 fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"]-df["F1"], fill='tonexty', name='1st Fresnel', line=dict(color='rgba(0,0,255,0.1)')))
+                
+                fig.update_layout(title="Path Elevation Profile (m)", xaxis_title="Distance (m)", yaxis_title="Elevation (m)", margin=dict(l=0,r=0,t=40,b=0))
                 st.plotly_chart(fig, use_container_width=True)
                 
                 df_att = calculate_itu_attenuation(st.session_state.lat_a, st.session_state.lon_a, dist/1000, freq, tx_pwr, gain_a, gain_b, temp, rh)
                 st.dataframe(df_att, hide_index=True)
+
+                # --- PDF GENERATION ENGINE ---
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    profile_path = os.path.join(tmp_dir, "profile.png")
+                    # kaleido saves the plotly figure to an image
+                    fig.write_image(profile_path, width=1000, height=500)
+                    
+                    st.session_state.pdf_data = generate_pdf_report(
+                        st.session_state.lat_a, st.session_state.lon_a,
+                        st.session_state.lat_b, st.session_state.lon_b,
+                        dist/1000, freq, profile_path, df_att
+                    )
+
+    # Place Download Button outside the calculation loop so it persists
+    if st.session_state.pdf_data:
+        st.divider()
+        st.download_button(
+            label="📄 Download Professional PDF Report",
+            data=st.session_state.pdf_data,
+            file_name="RF_Link_Analysis.pdf",
+            mime="application/pdf"
+        )
