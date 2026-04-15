@@ -13,9 +13,9 @@ import tempfile
 import os
 import re
 import urllib.parse
-from streamlit_js_eval import get_geolocation
+from streamlit_js_eval import streamlit_js_eval, get_geolocation
 
-# --- 1. INITIAL SETUP ---
+# --- 1. CONFIG & SESSION STATE ---
 st.set_page_config(layout="wide", page_title="RF Link Profiler Pro")
 
 def get_safe_param(key, default):
@@ -28,7 +28,7 @@ def get_safe_param(key, default):
     except: pass
     return float(default)
 
-# Session State Initialization
+# Initialize all persistent variables
 defaults = {
     "lat_a": 40.7128, "lon_a": -74.0060, "h_a": 15.0,
     "lat_b": 40.7306, "lon_b": -73.9866, "h_b": 20.0,
@@ -39,14 +39,21 @@ defaults = {
 for k, v in defaults.items():
     if k not in st.session_state: st.session_state[k] = v
 
-# --- 2. DEEP-LINKING ---
+# Deep-Linking Peer Check
 if "peer_lat" in st.query_params and not st.session_state.peer_loaded:
     st.session_state.lat_b = get_safe_param("peer_lat", st.session_state.lat_b)
     st.session_state.lon_b = get_safe_param("peer_lon", st.session_state.lon_b)
     st.session_state.h_b = get_safe_param("peer_h", st.session_state.h_b)
     st.session_state.peer_loaded = True
 
-# --- 3. HELPER FUNCTIONS ---
+# --- 2. HELPER FUNCTIONS ---
+def fetch_weather(lat, lon):
+    try:
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m"
+        r = requests.get(url, timeout=5).json()
+        return {"temp": float(r['current']['temperature_2m']), "rh": float(r['current']['relative_humidity_2m'])}
+    except: return None
+
 def get_ground_elevation(lat, lon):
     try:
         res = requests.get(f"https://api.opentopodata.org/v1/srtm30m?locations={lat},{lon}", timeout=5).json()
@@ -89,9 +96,8 @@ def calculate_itu_capacity(lat, lon, d_km, f_ghz, tx_p, g_a, g_b, t_c, rh, bw_mh
         rsl = rsl_clear - rain
         snr = rsl - noise_floor
         eff_snr = snr - qam_impl_gap
-        cap_mbps = bw_mhz * min(np.log2(1 + 10**(eff_snr/10)), max_spec_eff) if eff_snr > 0 else 0
-        mse = -eff_snr if eff_snr > 0 else 0 
-        
+        cap_mbps = bw_mhz * min(np.log2(1 + 10**(max(0.1, 10**(eff_snr/10)))), max_spec_eff) if eff_snr > -10 else 0
+        mse = -eff_snr if eff_snr > -10 else 0 
         results.append({"Avail.": f"{avail}%", "Rain(dB)": f"{rain:.1f}", "RSL(dBm)": f"{rsl:.1f}", "SNR(dB)": f"{snr:.1f}", "MSE(dB)": f"{mse:.1f}", "Cap(Mbps)": f"{cap_mbps:.0f}"})
     return pd.DataFrame(results), fsl + gas_loss, rsl_clear
 
@@ -100,21 +106,17 @@ def generate_pdf_report(params, profile_img_path, df_att):
     pdf.add_page()
     pdf.set_font("helvetica", "B", 16); pdf.cell(0, 10, "RF Link Analysis Report", align="C", ln=True)
     pdf.line(10, 22, 200, 22); pdf.ln(5)
-    
     pdf.set_font("helvetica", "B", 11); pdf.cell(0, 8, "1. Link Overview & Site Details", ln=True)
     pdf.set_font("helvetica", "", 9)
     pdf.cell(0, 6, f"Distance: {params['dist_km']:.3f} km | Status: {params['pdf_status']}", ln=True)
-    pdf.cell(0, 6, f"Site A: {params['lat_a']:.5f}, {params['lon_a']:.5f} | H: {params['h_a']}m | Dish: {params['d_a']}m ({params['g_a']:.1f} dBi, BW: {params['bw_a']:.2f} deg)", ln=True)
-    pdf.cell(0, 6, f"Site B: {params['lat_b']:.5f}, {params['lon_b']:.5f} | H: {params['h_b']}m | Dish: {params['d_b']}m ({params['g_b']:.1f} dBi, BW: {params['bw_b']:.2f} deg)", ln=True)
-    
+    pdf.cell(0, 6, f"Site A: {params['lat_a']:.5f}, {params['lon_a']:.5f} | H: {params['h_a']}m | Dish: {params['d_a']}m ({params['g_a']:.1f} dBi)", ln=True)
+    pdf.cell(0, 6, f"Site B: {params['lat_b']:.5f}, {params['lon_b']:.5f} | H: {params['h_b']}m | Dish: {params['d_b']}m ({params['g_b']:.1f} dBi)", ln=True)
     pdf.ln(3); pdf.set_font("helvetica", "B", 11); pdf.cell(0, 8, "2. Reflection Analysis", ln=True)
     pdf.set_font("helvetica", "", 9)
     pdf.cell(0, 6, f"Total Reflection Suppression: {params['ref_disc']:.1f} dB", ln=True)
     pdf.cell(0, 6, f"Worst Case Destructive RSL: {params['rsl_dest']:.1f} dBm | Best Case Constructive: {params['rsl_const']:.1f} dBm", ln=True)
-    
     pdf.ln(3); pdf.set_font("helvetica", "B", 11); pdf.cell(0, 8, "3. Terrain Profile", ln=True)
     pdf.image(profile_img_path, x=10, w=185); pdf.ln(5)
-    
     pdf.set_font("helvetica", "B", 11); pdf.cell(0, 8, "4. Performance Table", ln=True)
     pdf.set_font("helvetica", "B", 8)
     for col in list(df_att.columns): pdf.cell(31, 8, col, border=1, align="C")
@@ -125,13 +127,15 @@ def generate_pdf_report(params, profile_img_path, df_att):
         pdf.ln()
     return bytes(pdf.output())
 
-# --- 4. SIDEBAR ---
-st.sidebar.title("📡 RF Link Planner")
-click_target = st.sidebar.radio("Map Click:", ["None", "Site A", "Site B"])
+# --- 3. SIDEBAR ---
+st.sidebar.title("📡 Field Tools")
+click_target = st.sidebar.radio("Map Click Selector:", ["None", "Site A", "Site B"])
 
-if st.sidebar.button("📍 Use My GPS"):
-    st.session_state.gps_requested = True
-    st.rerun()
+col_gps, col_wea = st.sidebar.columns(2)
+if col_gps.button("📍 Set My GPS"): st.session_state.gps_requested = True; st.rerun()
+if col_wea.button("☁️ Sync Weather"):
+    if w := fetch_weather(st.session_state.lat_a, st.session_state.lon_a):
+        st.session_state.env_temp, st.session_state.env_rh = w['temp'], w['rh']; st.rerun()
 
 loc = get_geolocation()
 if st.session_state.gps_requested and loc:
@@ -139,7 +143,16 @@ if st.session_state.gps_requested and loc:
     st.session_state.h_a = round(float(max(5.0, (loc['coords']['altitude'] or 0) - get_ground_elevation(st.session_state.lat_a, st.session_state.lon_a))), 1)
     st.session_state.gps_requested = False; st.rerun()
 
+# WhatsApp Logic
+curr_url = streamlit_js_eval(js_expressions="window.parent.location.href", want_output=True, key="get_parent_url")
+if curr_url:
+    base = curr_url.split('?')[0]
+    s_url = f"{base}?peer_lat={st.session_state.lat_a}&peer_lon={st.session_state.lon_a}&peer_h={st.session_state.h_a}"
+    wa_link = f"https://wa.me/?text={urllib.parse.quote('Sync your Site B with me: ' + s_url)}"
+    st.sidebar.markdown(f'''<a href="{wa_link}" target="_blank" style="text-decoration:none;"><div style="background-color:#25D366;color:white;padding:12px;border-radius:8px;text-align:center;font-weight:bold;">📲 Share Site A with Peer</div></a>''', unsafe_allow_html=True)
+
 st.sidebar.divider()
+st.sidebar.subheader("Site Parameters")
 st.session_state.lat_a = st.sidebar.number_input("Lat A", value=float(st.session_state.lat_a), format="%.6f")
 st.session_state.lon_a = st.sidebar.number_input("Lon A", value=float(st.session_state.lon_a), format="%.6f")
 st.session_state.h_a = st.sidebar.number_input("Height A (m)", value=float(st.session_state.h_a))
@@ -148,13 +161,13 @@ st.session_state.lon_b = st.sidebar.number_input("Lon B", value=float(st.session
 st.session_state.h_b = st.sidebar.number_input("Height B (m)", value=float(st.session_state.h_b))
 
 st.sidebar.divider()
+st.sidebar.subheader("RF & System")
 freq = st.sidebar.number_input("Freq (GHz)", value=15.0)
 tx_p = st.sidebar.number_input("TX Power (dBm)", value=20.0)
 st.session_state.ch_bw = st.sidebar.number_input("BW (MHz)", value=float(st.session_state.ch_bw))
-st.session_state.nf = st.sidebar.number_input("NF (dB)", value=float(st.session_state.nf))
-
-qam_opts = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
+qam_opts = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 st.session_state.max_qam = st.sidebar.selectbox("Max QAM", options=qam_opts, index=qam_opts.index(int(st.session_state.max_qam)), format_func=lambda x: "BPSK" if x==2 else f"{x}-QAM")
+st.session_state.nf = st.sidebar.number_input("Noise Figure (dB)", value=float(st.session_state.nf))
 
 wl = 0.3 / freq
 d_a = st.sidebar.number_input("Dish A (m)", value=0.6)
@@ -162,8 +175,12 @@ g_a = 10 * np.log10(0.55 * (np.pi * d_a / wl)**2); bw_a = 70 * (wl / d_a)
 d_b = st.sidebar.number_input("Dish B (m)", value=0.6)
 g_b = 10 * np.log10(0.55 * (np.pi * d_b / wl)**2); bw_b = 70 * (wl / d_b)
 
-# --- 5. MAIN UI ---
-st.title("RF Path Profiler & Link Capacity")
+st.sidebar.subheader("Atmosphere")
+st.session_state.env_temp = st.sidebar.number_input("Temp (°C)", value=float(st.session_state.env_temp), format="%.1f")
+st.session_state.env_rh = st.sidebar.number_input("Humidity (%)", value=float(st.session_state.env_rh), format="%.1f")
+
+# --- 4. MAIN UI ---
+st.title("RF Link Path Profiler & Capacity Tool")
 c1, c2 = st.columns([1, 1])
 
 with c1:
@@ -173,11 +190,12 @@ with c1:
     folium.PolyLine([(st.session_state.lat_a, st.session_state.lon_a), (st.session_state.lat_b, st.session_state.lon_b)], color="blue").add_to(m)
     m_data = st_folium(m, height=450, width=650)
     if m_data and m_data.get("last_clicked"):
-        if click_target == "Site A": st.session_state.lat_a, st.session_state.lon_a = m_data["last_clicked"]["lat"], m_data["last_clicked"]["lng"]; st.rerun()
-        elif click_target == "Site B": st.session_state.lat_b, st.session_state.lon_b = m_data["last_clicked"]["lat"], m_data["last_clicked"]["lng"]; st.rerun()
+        lat, lon = m_data["last_clicked"]["lat"], m_data["last_clicked"]["lng"]
+        if click_target == "Site A": st.session_state.lat_a, st.session_state.lon_a = lat, lon; st.rerun()
+        elif click_target == "Site B": st.session_state.lat_b, st.session_state.lon_b = lat, lon; st.rerun()
 
 with c2:
-    if st.button("🚀 Analyze Link", type="primary", use_container_width=True):
+    if st.button("🚀 Analyze Link & Capacity", type="primary", use_container_width=True):
         df = get_elevation_profile(st.session_state.lat_a, st.session_state.lon_a, st.session_state.lat_b, st.session_state.lon_b)
         if df is not None:
             dist = df.iloc[-1]["Distance (m)"]
@@ -185,40 +203,32 @@ with c2:
             df["LOS"] = np.linspace(abs_a, abs_b, len(df))
             df["F1"] = 17.32 * np.sqrt(((df["Distance (m)"]/1000)*((dist-df["Distance (m)"])/1000))/(freq*(dist/1000)))
             
-            is_obstructed = any(df["Elevation (m)"] > df["LOS"])
-            ui_status = "❌ OBSTRUCTED" if is_obstructed else "✅ CLEAR"
-            pdf_status = "OBSTRUCTED" if is_obstructed else "CLEAR"
-            
-            # Reflection Analysis
-            x, y = df["Distance (m)"].values, df["Elevation (m)"].values
-            dy, dx = np.gradient(y), np.gradient(x); dx[dx==0]=1e-6; slope_ang = np.arctan2(dy, dx)
-            valid = (x > 0) & (x < dist)
-            ang_a_ray = np.arctan2(abs_a - y, x); ang_b_ray = np.arctan2(abs_b - y, dist - x)
-            diff = np.abs(ang_a_ray - ang_b_ray + 2 * slope_ang); diff[~valid] = np.inf
-            idx = np.argmin(diff); ref_x, ref_y = x[idx], y[idx]
-            
-            off_a = abs(np.degrees(np.arctan2(abs_b-abs_a, dist)) - np.degrees(np.arctan2(ref_y-abs_a, ref_x)))
-            off_b = abs(np.degrees(np.arctan2(abs_a-abs_b, dist)) - np.degrees(np.arctan2(ref_y-abs_b, dist-ref_x)))
-            disc = min(12*(off_a/bw_a)**2, 25) + min(12*(off_b/bw_b)**2, 25)
-            
-            st.subheader(f"Path: {ui_status} | Distance: {dist/1000:.3f} km")
+            is_obs = any(df["Elevation (m)"] > df["LOS"])
+            st.subheader(f"Path: {'❌ OBSTRUCTED' if is_obs else '✅ CLEAR'} | {dist/1000:.3f} km")
             
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["Elevation (m)"], fill='tozeroy', name='Terrain', line=dict(color='SaddleBrown')))
             fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"], name='LOS', line=dict(color='red', dash='dash')))
             fig.add_trace(go.Scatter(x=df["Distance (m)"], y=df["LOS"]-df["F1"], fill='tonexty', name='1st Fresnel'))
+            
+            x, y = df["Distance (m)"].values, df["Elevation (m)"].values
+            dy, dx = np.gradient(y), np.gradient(x); dx[dx==0]=1e-6; slope_ang = np.arctan2(dy, dx)
+            ang_a_ray = np.arctan2(abs_a - y, x); ang_b_ray = np.arctan2(abs_b - y, dist - x)
+            diff = np.abs(ang_a_ray - ang_b_ray + 2 * slope_ang); diff[~( (x>0) & (x<dist) )] = np.inf
+            idx = np.argmin(diff); ref_x, ref_y = x[idx], y[idx]
             fig.add_trace(go.Scatter(x=[0, ref_x, dist], y=[abs_a, ref_y, abs_b], name='Reflection', line=dict(color='orange', dash='dot')))
             st.plotly_chart(fig, use_container_width=True)
+            
+            off_a = abs(np.degrees(np.arctan2(abs_b-abs_a, dist)) - np.degrees(np.arctan2(ref_y-abs_a, ref_x)))
+            off_b = abs(np.degrees(np.arctan2(abs_a-abs_b, dist)) - np.degrees(np.arctan2(ref_y-abs_b, dist-ref_x)))
+            disc = min(12*(off_a/bw_a)**2, 25) + min(12*(off_b/bw_b)**2, 25)
             
             df_att, cl, rsl_c = calculate_itu_capacity(st.session_state.lat_a, st.session_state.lon_a, dist/1000, freq, tx_p, g_a, g_b, st.session_state.env_temp, st.session_state.env_rh, st.session_state.ch_bw, st.session_state.nf, st.session_state.max_qam)
             st.dataframe(df_att, hide_index=True)
             
-            r_ratio = 10**(-disc/20)
-            rsl_dest = rsl_c + 20*np.log10(max(1e-4, 1-r_ratio))
-            rsl_const = rsl_c + 20*np.log10(1+r_ratio)
-            
+            r_ratio = 10**(-disc/20); rsl_dest = rsl_c + 20*np.log10(max(1e-4, 1-r_ratio))
             params = {
-                "dist_km": dist/1000, "pdf_status": pdf_status, "ref_disc": disc, "rsl_dest": rsl_dest, "rsl_const": rsl_const,
+                "dist_km": dist/1000, "pdf_status": "OBSTRUCTED" if is_obs else "CLEAR", "ref_disc": disc, "rsl_dest": rsl_dest, "rsl_const": rsl_c + 20*np.log10(1+r_ratio),
                 "lat_a": st.session_state.lat_a, "lon_a": st.session_state.lon_a, "h_a": st.session_state.h_a, "d_a": d_a, "g_a": g_a, "bw_a": bw_a,
                 "lat_b": st.session_state.lat_b, "lon_b": st.session_state.lon_b, "h_b": st.session_state.h_b, "d_b": d_b, "g_b": g_b, "bw_b": bw_b
             }
@@ -227,4 +237,4 @@ with c2:
                 st.session_state.pdf_data = generate_pdf_report(params, img, df_att)
 
     if st.session_state.pdf_data:
-        st.download_button("📄 Download PDF", st.session_state.pdf_data, "RF_Report.pdf", type="primary")
+        st.download_button("📄 Download PDF Report", st.session_state.pdf_data, "RF_Analysis.pdf", type="primary", use_container_width=True)
