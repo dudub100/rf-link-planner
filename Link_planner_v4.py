@@ -33,7 +33,7 @@ defaults = {
     "lat_a": 40.7128, "lon_a": -74.0060, "h_a": 15.0,
     "lat_b": 40.7306, "lon_b": -73.9866, "h_b": 20.0,
     "env_temp": 15.0, "env_rh": 50.0, 
-    "ch_bw": 56.0, "nf": 5.0, # New Parameters
+    "ch_bw": 56.0, "nf": 5.0, "max_qam": 4096, # Added max_qam
     "gps_requested": False, "pdf_data": None, "peer_loaded": False
 }
 for k, v in defaults.items():
@@ -74,7 +74,7 @@ def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=100):
             return pd.DataFrame({"Distance (m)": distances, "Elevation (m)": elevs, "Lat": lats, "Lon": lons})
     except: return None
 
-def calculate_itu_capacity(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b, t_c, rh, bw_mhz, nf):
+def calculate_itu_capacity(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b, t_c, rh, bw_mhz, nf, max_qam):
     if d_km <= 0: return pd.DataFrame()
     fsl = 92.4 + 20 * np.log10(d_km) + 20 * np.log10(f_ghz)
     
@@ -91,6 +91,7 @@ def calculate_itu_capacity(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b, t_c,
     
     # QAM Gap (~1.53 dB) + Implementation Loss (3 dB)
     qam_impl_gap = 4.53 
+    max_spec_eff = np.log2(max_qam) # Hard cap based on modem limit
     
     results = []
     for avail in [99.0, 99.9, 99.99, 99.999]:
@@ -102,9 +103,15 @@ def calculate_itu_capacity(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b, t_c,
         snr = rsl - noise_floor
         eff_snr = snr - qam_impl_gap
         
-        # Shannon Capacity (Mbps)
-        cap_mbps = (bw_mhz * 1e6 * np.log2(1 + 10**(eff_snr/10))) / 1e6 if eff_snr > 0 else 0
-        mse = -eff_snr if eff_snr > 0 else 0 # Idealized MSE estimation
+        # Shannon Capacity (Mbps) capped by Maximum QAM
+        if eff_snr > 0:
+            theoretical_spec_eff = np.log2(1 + 10**(eff_snr/10))
+            actual_spec_eff = min(theoretical_spec_eff, max_spec_eff)
+            cap_mbps = bw_mhz * actual_spec_eff
+        else:
+            cap_mbps = 0
+            
+        mse = -eff_snr if eff_snr > 0 else 0 
         
         results.append({
             "Avail.": f"{avail}%", 
@@ -128,7 +135,7 @@ def generate_pdf_report(params, profile_img_path, df_att):
     # 1. Sites and Antennas
     pdf.set_font("helvetica", "B", 12); pdf.cell(0, 8, "1. Site & Antenna Parameters", ln=True)
     pdf.set_font("helvetica", "", 9)
-    pdf.cell(0, 6, f"Frequency: {params['freq']} GHz | Channel BW: {params['bw']} MHz | Noise Figure: {params['nf']} dB", ln=True)
+    pdf.cell(0, 6, f"Frequency: {params['freq']} GHz | Channel BW: {params['bw']} MHz | Max Mod: {params['max_qam']}-QAM | NF: {params['nf']} dB", ln=True)
     pdf.cell(0, 6, f"Site A: {params['lat_a']:.5f}, {params['lon_a']:.5f} | H (AGL): {params['h_a']}m | Dish: {params['d_a']}m ({params['g_a']:.1f} dBi, BW: {params['bw_a']:.2f} deg)", ln=True)
     pdf.cell(0, 6, f"Site B: {params['lat_b']:.5f}, {params['lon_b']:.5f} | H (AGL): {params['h_b']}m | Dish: {params['d_b']}m ({params['g_b']:.1f} dBi, BW: {params['bw_b']:.2f} deg)", ln=True)
     pdf.cell(0, 6, f"Clear Sky Pathloss (FSL + Atm): {params['clear_loss']:.2f} dB | Clear Sky RSL: {params['rsl_clear']:.2f} dBm", ln=True)
@@ -152,7 +159,7 @@ def generate_pdf_report(params, profile_img_path, df_att):
     pdf.image(profile_img_path, x=10, w=190); pdf.ln(5)
 
     # 4. Table
-    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 8, "4. ITU-R Link Budget & Capacity (Shannon w/ QAM Penalty)", ln=True)
+    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 8, "4. ITU-R Link Budget & Capped Capacity", ln=True)
     pdf.set_font("helvetica", "B", 8)
     col_widths = [20, 20, 25, 25, 25, 40]
     for col, w in zip(df_att.columns, col_widths): pdf.cell(w, 8, col, border=1, align="C")
@@ -194,6 +201,15 @@ st.sidebar.subheader("RF & System Parameters")
 freq = st.sidebar.number_input("Freq (GHz)", value=15.0, min_value=0.1)
 tx_p = st.sidebar.number_input("TX Power (dBm)", value=20.0)
 st.session_state.ch_bw = st.sidebar.number_input("Channel BW (MHz)", value=float(st.session_state.ch_bw))
+
+# Added QAM Cap Dropdown
+qam_options = [4, 16, 64, 256, 512, 1024, 2048, 4096, 8192, 16384]
+st.session_state.max_qam = st.sidebar.selectbox(
+    "Max Modulation Profile (QAM)", 
+    options=qam_options, 
+    index=qam_options.index(int(st.session_state.max_qam)) if int(st.session_state.max_qam) in qam_options else 7
+)
+
 st.session_state.nf = st.sidebar.number_input("System Noise Figure (dB)", value=float(st.session_state.nf))
 
 wl = 0.3 / freq
@@ -276,10 +292,10 @@ with c2:
                 # Link Budget & Capacity
                 df_att, clear_loss, rsl_clr = calculate_itu_capacity(
                     st.session_state.lat_a, st.session_state.lon_a, dist/1000, freq, tx_p, gain_a, gain_b, 
-                    temp, rh, st.session_state.ch_bw, st.session_state.nf
+                    temp, rh, st.session_state.ch_bw, st.session_state.nf, st.session_state.max_qam
                 )
                 
-                # Constructive/Destructive Fade calculations (assuming rho ~ 1 for worst-case ground reflection)
+                # Constructive/Destructive Fade calculations
                 voltage_ratio = 10**(-tot_disc / 20)
                 rsl_dest = rsl_clr + 20 * np.log10(max(1e-5, 1 - voltage_ratio))
                 rsl_const = rsl_clr + 20 * np.log10(1 + voltage_ratio)
@@ -294,7 +310,7 @@ with c2:
                 
                 # PDF Generation
                 pdf_params = {
-                    "freq": freq, "bw": st.session_state.ch_bw, "nf": st.session_state.nf,
+                    "freq": freq, "bw": st.session_state.ch_bw, "nf": st.session_state.nf, "max_qam": st.session_state.max_qam,
                     "lat_a": st.session_state.lat_a, "lon_a": st.session_state.lon_a, "h_a": st.session_state.h_a,
                     "lat_b": st.session_state.lat_b, "lon_b": st.session_state.lon_b, "h_b": st.session_state.h_b,
                     "d_a": diam_a, "g_a": gain_a, "bw_a": hpbw_a,
