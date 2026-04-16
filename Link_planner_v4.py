@@ -40,6 +40,18 @@ for k, v in defaults.items():
     if k not in st.session_state: st.session_state[k] = v
 
 # --- 2. CORE ENGINEERING FUNCTIONS ---
+# Restored robust weather fetcher
+def fetch_weather(lat, lon):
+    try:
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m"
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if 'current' in data:
+                return {"temp": float(data['current']['temperature_2m']), "rh": float(data['current']['relative_humidity_2m'])}
+    except: pass
+    return None
+
 def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=100):
     lats, lons = np.linspace(lat1, lat2, num_points), np.linspace(lon1, lon2, num_points)
     coords = list(zip(lats, lons))
@@ -122,9 +134,15 @@ st.sidebar.title("🛠️ RF Operations")
 click_target = st.sidebar.radio("Map Click Selector:", ["None", "Site A", "Site B"])
 c1, c2 = st.sidebar.columns(2)
 if c1.button("📍 My GPS"): st.session_state.gps_requested = True; st.rerun()
+
+# SAFE WEATHER CHECK
 if c2.button("☁️ Weather"):
-    if w := requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={st.session_state.lat_a}&longitude={st.session_state.lon_a}&current=temperature_2m,relative_humidity_2m").json():
-        st.session_state.env_temp, st.session_state.env_rh = w['current']['temperature_2m'], w['current']['relative_humidity_2m']; st.rerun()
+    w = fetch_weather(st.session_state.lat_a, st.session_state.lon_a)
+    if w:
+        st.session_state.env_temp, st.session_state.env_rh = w['temp'], w['rh']
+        st.rerun()
+    else:
+        st.sidebar.error("⚠️ Weather API error. Check coordinates.")
 
 loc = get_geolocation()
 if st.session_state.gps_requested and loc:
@@ -189,7 +207,7 @@ with col2:
                 a_a, a_b = df.iloc[0]["Elevation (m)"]+st.session_state.h_a, df.iloc[-1]["Elevation (m)"]+st.session_state.h_b
                 df["LOS"] = np.linspace(a_a, a_b, len(df))
                 
-                # FRESNEL ZONE CALCULATION
+                # FRESNEL ZONE
                 df["F1"] = 17.32 * np.sqrt(((df["Distance (m)"]/1000)*((dist-df["Distance (m)"])/1000))/(freq*(dist/1000)))
                 
                 diff_loss = calculate_diffraction_loss(df, freq)
@@ -216,7 +234,6 @@ with col2:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=x, y=y, fill='tozeroy', name='Terrain', line=dict(color='SaddleBrown')))
                 fig.add_trace(go.Scatter(x=x, y=df["LOS"], name='LOS', line=dict(color='red', dash='dash')))
-                # ADD FRESNEL ZONE TO PLOT
                 fig.add_trace(go.Scatter(x=x, y=df["LOS"] - df["F1"], fill='tonexty', name='1st Fresnel (F1)', line=dict(color='rgba(0,0,255,0.2)')))
                 fig.add_trace(go.Scatter(x=[0, ref_x, dist], y=[a_a, ref_y, a_b], name='Reflection', line=dict(color='orange', dash='dot')))
                 fig.update_layout(margin=dict(l=0,r=0,t=10,b=0), height=350)
