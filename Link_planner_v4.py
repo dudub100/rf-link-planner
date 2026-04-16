@@ -32,7 +32,7 @@ defaults = {
     "lat_a": 40.7128, "lon_a": -74.0060, "h_a": 15.0,
     "lat_b": 40.7306, "lon_b": -73.9866, "h_b": 20.0,
     "env_temp": 15.0, "env_rh": 50.0, 
-    "ch_bw": 56.0, "nf": 5.0, "max_qam": 4096,
+    "ch_bw": 250.0, "nf": 7.0, "max_qam": 1024,
     "gps_requested": False, "pdf_data": None, "peer_loaded": False,
     "results_ready": False
 }
@@ -148,7 +148,7 @@ st.session_state.lon_b = st.sidebar.number_input("Lon B", value=float(st.session
 st.session_state.h_b = st.sidebar.number_input("Height B (m)", value=float(st.session_state.h_b))
 
 st.sidebar.divider()
-freq = st.sidebar.number_input("Freq (GHz)", value=15.0); tx_p = st.sidebar.number_input("TX Power (dBm)", value=20.0)
+freq = st.sidebar.number_input("Freq (GHz)", value=71.0); tx_p = st.sidebar.number_input("TX Power (dBm)", value=20.0)
 st.session_state.ch_bw = st.sidebar.number_input("BW (MHz)", value=float(st.session_state.ch_bw))
 q_ops = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 st.session_state.max_qam = st.sidebar.selectbox("Max QAM", q_ops, index=q_ops.index(int(st.session_state.max_qam)), format_func=lambda x: "BPSK" if x==2 else f"{x}-QAM")
