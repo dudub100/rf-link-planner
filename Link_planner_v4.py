@@ -40,16 +40,32 @@ for k, v in defaults.items():
     if k not in st.session_state: st.session_state[k] = v
 
 # --- 2. CORE ENGINEERING FUNCTIONS ---
-# Safe Weather Fetcher
+
+# DUAL-API WEATHER FETCHER
 def fetch_weather(lat, lon):
+    # Attempt 1: Open-Meteo
     try:
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m"
-        r = requests.get(url, timeout=5)
-        if r.status_code == 200:
-            data = r.json()
+        url_om = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m"
+        r_om = requests.get(url_om, timeout=5)
+        if r_om.status_code == 200:
+            data = r_om.json()
             if 'current' in data:
                 return {"temp": float(data['current']['temperature_2m']), "rh": float(data['current']['relative_humidity_2m'])}
     except: pass
+
+    # Attempt 2: Fallback to Met.no
+    try:
+        url_met = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat}&lon={lon}"
+        headers = {'User-Agent': 'RFLinkPlanner/1.0 (github.com/dudub100)'} 
+        r_met = requests.get(url_met, headers=headers, timeout=5)
+        if r_met.status_code == 200:
+            data = r_met.json()
+            current = data['properties']['timeseries'][0]['data']['instant']['details']
+            if 'air_temperature' in current and 'relative_humidity' in current:
+                return {"temp": float(current['air_temperature']), "rh": float(current['relative_humidity'])}
+    except: pass
+    
+    # If both fail
     return None
 
 def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=100):
@@ -135,7 +151,6 @@ click_target = st.sidebar.radio("Map Click Selector:", ["None", "Site A", "Site 
 c1, c2 = st.sidebar.columns(2)
 if c1.button("📍 My GPS"): st.session_state.gps_requested = True; st.rerun()
 
-# --- THE FIX IS HERE ---
 if c2.button("☁️ Weather"):
     w = fetch_weather(st.session_state.lat_a, st.session_state.lon_a)
     if w:
@@ -143,7 +158,7 @@ if c2.button("☁️ Weather"):
         st.session_state.env_rh = w['rh']
         st.rerun()
     else:
-        st.sidebar.error("⚠️ Weather API error. Could not fetch data.")
+        st.sidebar.error("⚠️ Both weather APIs failed. Manual entry required.")
 
 loc = get_geolocation()
 if st.session_state.gps_requested and loc:
