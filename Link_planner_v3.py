@@ -161,13 +161,13 @@ def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_p
     
     tot_disc = ref_data["total_disc"]
     if tot_disc < 10.0:
-        status = f"CRITICAL MULTIPATH: Total suppression is only {tot_disc:.1f} dB. Severe fading expected."
+        status = f"CRITICAL MULTIPATH: Nominal suppression is only {tot_disc:.1f} dB. Severe fading expected."
         pdf.set_text_color(220, 53, 69)
     elif 10.0 <= tot_disc < 20.0:
-        status = f"MARGINAL MULTIPATH: Total suppression is {tot_disc:.1f} dB. Partial attenuation."
+        status = f"MARGINAL MULTIPATH: Nominal suppression is {tot_disc:.1f} dB. Partial attenuation."
         pdf.set_text_color(255, 153, 0)
     else:
-        status = f"CLEAR: Total suppression is {tot_disc:.1f} dB. Safely suppressed."
+        status = f"CLEAR: Nominal suppression is {tot_disc:.1f} dB. Safely suppressed."
         pdf.set_text_color(40, 167, 69)
 
     pdf.multi_cell(0, 6, status, new_x="LMARGIN", new_y="NEXT")
@@ -178,19 +178,22 @@ def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_p
     pdf.cell(95, 6, f"Site B Reflection Angle: {ref_data['ang_b']:.2f} deg (Suppression: {ref_data['disc_b']:.1f} dB)", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
-    # --- NEW: RSL Variance and Tilt Analysis in PDF ---
     pdf.set_font("helvetica", "B", 10)
-    pdf.cell(0, 6, "RSL Multipath Variance (Ripple):", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, "Nominal RSL Multipath Variance (Ripple):", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("helvetica", "", 10)
     pdf.cell(0, 6, f"  Constructive Interference (Peak): +{ref_data['var_pos']:.2f} dB", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 6, f"  Destructive Interference (Fade): {ref_data['var_neg']:.2f} dB", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
+    pdf.ln(4)
 
+    # --- UPDATED: TILT VARIANCE IN PDF ---
     pdf.set_font("helvetica", "B", 10)
-    pdf.cell(0, 6, "Tilt-Up Mitigation Evaluation (1.5 dB Main Path Loss Per Side):", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, "Tilt-Up Mitigation Evaluation (1.5 dB Main Path Loss Per Side | 3.0 dB Total):", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("helvetica", "", 10)
-    pdf.cell(0, 6, f"  New Total Multipath Suppression: {ref_data['tilted_disc']:.1f} dB", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"  New Absolute Multipath Suppression: {ref_data['tilted_disc']:.1f} dB", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"  Effective Suppression (Relative to dropped Main Path): {ref_data['effective_tilted_suppression']:.1f} dB", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 6, f"  Net Signal-to-Interference Improvement: {ref_data['net_improvement']:.1f} dB", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"  Tilted Constructive Interference (Peak): +{ref_data['tilted_var_pos']:.2f} dB", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"  Tilted Destructive Interference (Fade): {ref_data['tilted_var_neg']:.2f} dB", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
 
     pdf.set_font("helvetica", "B", 12)
@@ -357,18 +360,15 @@ with col2:
                 disc_b = min(12.0 * (off_boresight_b / hpbw_b)**2, 25.0)
                 total_discrimination = disc_a + disc_b
 
-                # --- NEW: RSL VARIANCE CALCULATION ---
-                # Reflection coefficient amplitude rho based on total suppression
+                # --- RSL VARIANCE CALCULATION (NOMINAL) ---
                 rho = 10**(-total_discrimination / 20.0)
                 var_pos = 20 * np.log10(1 + rho)  # Constructive Ripple Peak
                 var_neg = 20 * np.log10(1 - rho)  # Destructive Ripple Null
 
-                # --- NEW: TILT-UP EVALUATION (1.5 dB Main Path Loss) ---
-                # Calculate required physical tilt to induce 1.5 dB loss: 1.5 = 12 * (tilt / HPBW)^2
+                # --- TILT-UP EVALUATION & VARIANCE (3 dB Main Path Loss Total) ---
                 tilt_angle_a = hpbw_a * np.sqrt(1.5 / 12.0)
                 tilt_angle_b = hpbw_b * np.sqrt(1.5 / 12.0)
                 
-                # Tilting up moves boresight further from ground reflection
                 tilted_off_a = off_boresight_a + tilt_angle_a
                 tilted_off_b = off_boresight_b + tilt_angle_b
                 
@@ -376,8 +376,14 @@ with col2:
                 tilted_disc_b = min(12.0 * (tilted_off_b / hpbw_b)**2, 25.0)
                 tilted_total_disc = tilted_disc_a + tilted_disc_b
                 
-                # Net improvement accounts for the 3dB intentional system path loss
-                net_improvement = tilted_total_disc - total_discrimination - 3.0
+                # Effective suppression: The absolute suppression MINUS the 3dB main path penalty
+                effective_tilted_suppression = tilted_total_disc - 3.0
+                net_improvement = effective_tilted_suppression - total_discrimination
+
+                # Calculate the RSL ripple relative to the new, lowered main signal level
+                rho_tilted = 10**(-effective_tilted_suppression / 20.0)
+                tilted_var_pos = 20 * np.log10(1 + rho_tilted)
+                tilted_var_neg = 20 * np.log10(1 - rho_tilted)
 
                 # --- 1. BUILD PROFILE CHART ---
                 lowest_point = min(df_profile["Elevation (m)"].min(), min(fresnel_lower))
@@ -391,7 +397,6 @@ with col2:
                 fig_profile.add_trace(go.Scatter(x=[0, total_dist], y=[abs_h_a, abs_h_b], mode='lines+markers', line=dict(color='red', dash='dash'), marker=dict(size=8, color=['green', 'red']), name='Line of Sight'))
                 fig_profile.add_trace(go.Scatter(x=[0, 0], y=[elev_a, abs_h_a], mode='lines', line=dict(color='black', width=4), name='Mast A'))
                 fig_profile.add_trace(go.Scatter(x=[total_dist, total_dist], y=[elev_b, abs_h_b], mode='lines', line=dict(color='black', width=4), name='Mast B'))
-                
                 fig_profile.add_trace(go.Scatter(x=[0, ref_dist, total_dist], y=[abs_h_a, ref_elev, abs_h_b], mode='lines+markers', line=dict(color='orange', dash='dashdot', width=2), marker=dict(size=6, color='orange'), name='Reflected Path'))
 
                 fig_profile.update_layout(
@@ -404,26 +409,24 @@ with col2:
 
                 # --- 2. MULTIPATH WARNING BANNER ---
                 if total_discrimination < 10.0:
-                    st.error(f"🔴 **CRITICAL MULTIPATH:** Total suppression is only **{total_discrimination:.1f} dB**. Both antennas are staring at the reflection point. Expect severe destructive fading.")
+                    st.error(f"🔴 **CRITICAL MULTIPATH:** Nominal suppression is only **{total_discrimination:.1f} dB**. Expect severe destructive fading.")
                 elif 10.0 <= total_discrimination < 20.0:
-                    st.warning(f"🟡 **MARGINAL MULTIPATH:** Total suppression is **{total_discrimination:.1f} dB**. The reflection is partially attenuated, but may still cause signal ripple.")
+                    st.warning(f"🟡 **MARGINAL MULTIPATH:** Nominal suppression is **{total_discrimination:.1f} dB**. Partial attenuation, expect signal ripple.")
                 else:
-                    st.success(f"✅ **CLEAR:** Total suppression is **{total_discrimination:.1f} dB**. The geometric reflection angle is safely suppressed by the combined antenna patterns.")
-
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.markdown(f"**Site A Reflection Angle:** {off_boresight_a:.2f}° off-boresight")
-                    st.markdown(f"*(Calculated Suppression: {disc_a:.1f} dB)*")
-                with col_b:
-                    st.markdown(f"**Site B Reflection Angle:** {off_boresight_b:.2f}° off-boresight")
-                    st.markdown(f"*(Calculated Suppression: {disc_b:.1f} dB)*")
+                    st.success(f"✅ **CLEAR:** Nominal suppression is **{total_discrimination:.1f} dB**. Safely suppressed.")
 
                 # --- 3. ADVANCED METRICS UI ---
-                st.markdown("### Advanced Multipath Metrics")
+                st.markdown("### Nominal Multipath Metrics")
                 col_m1, col_m2, col_m3 = st.columns(3)
-                col_m1.metric("RSL Ripple (Constructive)", f"+{var_pos:.2f} dB")
-                col_m2.metric("RSL Ripple (Destructive)", f"{var_neg:.2f} dB")
-                col_m3.metric("Tilted-Up Suppression", f"{tilted_total_disc:.1f} dB", f"{net_improvement:.1f} dB Net Gain")
+                col_m1.metric("Nominal RSL Ripple (Peak)", f"+{var_pos:.2f} dB")
+                col_m2.metric("Nominal RSL Ripple (Fade)", f"{var_neg:.2f} dB")
+                col_m3.metric("Total Nominal Suppression", f"{total_discrimination:.1f} dB")
+
+                st.markdown("### Tilted-Up Multipath Metrics (Accounts for 3dB Main Path Loss)")
+                col_t1, col_t2, col_t3 = st.columns(3)
+                col_t1.metric("Tilted RSL Ripple (Peak)", f"+{tilted_var_pos:.2f} dB")
+                col_t2.metric("Tilted RSL Ripple (Fade)", f"{tilted_var_neg:.2f} dB")
+                col_t3.metric("Effective Tilted Suppression", f"{effective_tilted_suppression:.1f} dB", f"{net_improvement:.1f} dB Net Gain")
 
                 # --- 4. ITU TABLE ---
                 d_km = total_dist / 1000.0
@@ -441,7 +444,10 @@ with col2:
                     "var_pos": var_pos,
                     "var_neg": var_neg,
                     "tilted_disc": tilted_total_disc,
+                    "effective_tilted_suppression": effective_tilted_suppression,
                     "net_improvement": net_improvement,
+                    "tilted_var_pos": tilted_var_pos,
+                    "tilted_var_neg": tilted_var_neg,
                     "dia_a": diameter_a,
                     "gain_a": gain_a,
                     "dia_b": diameter_b,
