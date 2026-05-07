@@ -43,7 +43,7 @@ def get_elevation_profile(lat1, lon1, lat2, lon2, num_points=50):
             if len(elevations) == num_points:
                 return pd.DataFrame({"Distance (m)": distances, "Elevation (m)": elevations, "Lat": lats, "Lon": lons})
     except Exception as e:
-        print(f"OpenTopoData failed: {e}")
+        print(f"Elevation API error: {e}")
     return None
 
 def calculate_itu_attenuation(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b, t_c, rh):
@@ -68,131 +68,148 @@ def calculate_itu_attenuation(lat, lon, d_km, f_ghz, tx_power, gain_a, gain_b, t
         p = round(100.0 - avail, 3) 
         try: rain_loss = float(itur.models.itu530.rain_attenuation(lat=lat, lon=lon, d=d_val, f=f_val, el=0*u.deg, p=p).value)
         except: rain_loss = 0.0
-        results.append({"Avail.": f"{avail}%", "Rain (dB)": f"{rain_loss:.1f}", "Clear RSL": f"{rsl_clear:.1f} dBm", "Faded RSL": f"{rsl_clear - rain_loss:.1f} dBm"})
+        results.append({"Avail.": f"{avail}%", "FSL (dB)": f"{fsl:.1f}", "Atm. (dB)": f"{gas_loss:.2f}", "Rain (dB)": f"{rain_loss:.1f}", "Clear RSL": f"{rsl_clear:.1f} dBm", "Faded RSL": f"{rsl_clear - rain_loss:.1f} dBm"})
     return pd.DataFrame(results)
 
 def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img, prof_img, df_att, ref_data, ant_data):
     class PDF(FPDF):
         def header(self):
-            self.set_font("helvetica", "B", 14); self.cell(0, 10, "RF Link Analysis Report", align="C", ln=True)
-            self.line(10, 18, 200, 18); self.ln(5)
+            self.set_font("helvetica", "B", 16)
+            self.cell(0, 10, "RF Link Path Profile & Multipath Report", ln=True, align="C")
+            self.line(10, 22, 200, 22); self.ln(10)
     
     pdf = PDF()
     pdf.add_page()
     
-    # Antenna Sizes Section
-    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 8, "1. Hardware Specifications", ln=True)
+    # 1. Hardware & Link
+    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 8, "1. Link & Hardware Specifications", ln=True)
     pdf.set_font("helvetica", "", 10)
+    pdf.cell(0, 6, f"Frequency: {f_ghz} GHz | Path Distance: {d_km:.3f} km", ln=True)
     pdf.cell(0, 6, f"Antenna A: {ant_data['dia_a']}m Diameter | Gain: {ant_data['gain_a']:.1f} dBi", ln=True)
     pdf.cell(0, 6, f"Antenna B: {ant_data['dia_b']}m Diameter | Gain: {ant_data['gain_b']:.1f} dBi", ln=True)
-    pdf.ln(4)
+    pdf.ln(5)
 
-    # Multipath Section
-    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 8, "2. Multipath Analysis", ln=True)
+    # 2. Multipath Analysis
+    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 8, "2. Multipath Reflection Analysis", ln=True)
     pdf.set_font("helvetica", "", 10)
-    pdf.cell(0, 6, f"Nominal Multipath Suppression: {ref_data['total_disc']:.1f} dB", ln=True)
-    pdf.cell(0, 6, f"Constructive/Destructive Variance: +/- {ref_data['variance']:.2f} dB", ln=True)
+    pdf.cell(0, 6, f"Nominal Suppression: {ref_data['total_disc']:.1f} dB", ln=True)
+    pdf.cell(0, 6, f"Constructive Interference: +{ref_data['var_pos']:.2f} dB", ln=True)
+    pdf.cell(0, 6, f"Destructive Interference: {ref_data['var_neg']:.2f} dB", ln=True)
+    pdf.ln(3)
     
-    if ref_data['tilted_disc'] > 0:
-        pdf.set_font("helvetica", "B", 10)
-        pdf.cell(0, 6, f"Tilt-Up Optimization (1.5dB Main Path Loss per side):", ln=True)
-        pdf.set_font("helvetica", "", 10)
-        pdf.cell(0, 6, f" - New Multipath Suppression: {ref_data['tilted_disc']:.1f} dB", ln=True)
-        pdf.cell(0, 6, f" - Net Improvement in S/R Ratio: {ref_data['tilt_improvement']:.1f} dB", ln=True)
+    # Tilt evaluation
+    pdf.set_font("helvetica", "B", 10); pdf.cell(0, 6, "Tilt-Up Mitigation Evaluation (1.5dB Main Path Loss per side):", ln=True)
+    pdf.set_font("helvetica", "", 10)
+    pdf.cell(0, 6, f"New Multipath Suppression: {ref_data['tilted_disc']:.1f} dB", ln=True)
+    pdf.cell(0, 6, f"Net Improvement (Suppression Gain - 3dB): {ref_data['net_improvement']:.1f} dB", ln=True)
     pdf.ln(5)
 
     pdf.image(prof_img, x=10, w=190); pdf.add_page()
-    pdf.image(map_img, x=10, w=190); pdf.ln(5)
+    pdf.image(map_img, x=10, w=190); pdf.ln(10)
     
-    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 8, "3. Estimated Link Budget", ln=True)
-    pdf.set_font("helvetica", "", 8)
-    for col in df_att.columns: pdf.cell(45, 8, col, border=1)
+    pdf.set_font("helvetica", "B", 12); pdf.cell(0, 8, "3. ITU-R Estimated Link Budget", ln=True)
+    pdf.set_font("helvetica", "B", 8)
+    col_widths = [20, 25, 25, 25, 45, 45]
+    for i, col in enumerate(df_att.columns): pdf.cell(col_widths[i], 8, col, border=1, align="C")
     pdf.ln()
+    pdf.set_font("helvetica", "", 8)
     for row in df_att.itertuples(index=False):
-        for item in row: pdf.cell(45, 8, str(item), border=1)
+        for i, item in enumerate(row): pdf.cell(col_widths[i], 8, str(item), border=1, align="C")
         pdf.ln()
     return bytes(pdf.output())
 
 # --- 3. SIDEBAR ---
 st.sidebar.title("Link Parameters")
-env_temp = st.sidebar.number_input("Temp (°C)", value=15.0)
+env_temp = st.sidebar.number_input("Temperature (°C)", value=15.0)
 env_humidity = st.sidebar.number_input("Humidity (%)", value=50.0)
 frequency_ghz = st.sidebar.number_input("Frequency (GHz)", value=15.0)
 tx_power = st.sidebar.number_input("TX Power (dBm)", value=20.0)
 
 wavelength = 3e8 / (frequency_ghz * 1e9)
+
+st.sidebar.subheader("Antenna A")
 diameter_a = st.sidebar.number_input("Diameter A (m)", value=0.6)
 gain_a = 10 * np.log10(0.55 * (np.pi * diameter_a / wavelength)**2)
 hpbw_a = 70.0 * (wavelength / diameter_a)
 
+st.sidebar.subheader("Antenna B")
 diameter_b = st.sidebar.number_input("Diameter B (m)", value=0.6)
 gain_b = 10 * np.log10(0.55 * (np.pi * diameter_b / wavelength)**2)
 hpbw_b = 70.0 * (wavelength / diameter_b)
 
-h_a = st.sidebar.number_input("Height A (m)", value=15.0)
-h_b = st.sidebar.number_input("Height B (m)", value=20.0)
+# --- 4. MAIN LAYOUT ---
+st.title("Line of Sight & Multipath Analyzer")
+col1, col2 = st.columns([1, 1])
 
-# --- 4. MAIN ---
-if st.button("Run Full Analysis"):
-    df_profile = get_elevation_profile(st.session_state.site_a["lat"], st.session_state.site_a["lon"], st.session_state.site_b["lat"], st.session_state.site_b["lon"])
-    
-    if df_profile is not None:
-        dist = df_profile.iloc[-1]["Distance (m)"]
-        abs_a, abs_b = df_profile.iloc[0]["Elevation (m)"] + h_a, df_profile.iloc[-1]["Elevation (m)"] + h_b
-        
-        # Multipath Geometry
-        x, y = df_profile["Distance (m)"].values, df_profile["Elevation (m)"].values
-        # Simple reflection point finder (lowest difference between arrival angles)
-        a_a = np.arctan2(abs_a - y, x); a_b = np.arctan2(abs_b - y, dist - x)
-        idx_ref = np.argmin(np.abs(a_a - a_b))
-        
-        off_a = np.degrees(abs(np.arctan2(abs_b-abs_a, dist) - np.arctan2(y[idx_ref]-abs_a, x[idx_ref])))
-        off_b = np.degrees(abs(np.arctan2(abs_a-abs_b, dist) - np.arctan2(y[idx_ref]-abs_b, dist-x[idx_ref])))
-        
-        # Nominal Discrim
-        disc_a = min(12.0 * (off_a / hpbw_a)**2, 35.0)
-        disc_b = min(12.0 * (off_b / hpbw_b)**2, 35.0)
-        total_disc = disc_a + disc_b
-        
-        # 1. Tilt Analysis (Shift boresight by finding angle for 1.5dB loss)
-        # 1.5 = 12 * (tilt / hpbw)^2 => tilt = hpbw * sqrt(1.5/12)
-        tilt_angle_a = hpbw_a * np.sqrt(1.5/12.0)
-        tilt_angle_b = hpbw_b * np.sqrt(1.5/12.0)
-        
-        # New off-boresight is original off-boresight + tilt (moving away from ground)
-        tilt_disc_a = min(12.0 * ((off_a + tilt_angle_a) / hpbw_a)**2, 35.0)
-        tilt_disc_b = min(12.0 * ((off_b + tilt_angle_b) / hpbw_b)**2, 35.0)
-        total_tilt_disc = tilt_disc_a + tilt_disc_b
-        
-        # 2. RSL Variance (Ripple)
-        # Ratio of Reflected/Direct voltage: rho = 10^(-total_disc/20)
-        rho = 10**(-total_disc / 20.0)
-        var_pos = 20 * np.log10(1 + rho) # Constructive
-        var_neg = 20 * np.log10(1 - rho) # Destructive
-        
-        st.subheader("Multipath & Tilt Analysis")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Nominal Suppression", f"{total_disc:.1f} dB")
-        c2.metric("RSL Variance", f"{var_pos:.1f} / {var_neg:.1f} dB")
-        c3.metric("Tilted Suppression", f"{total_tilt_disc:.1f} dB", f"{total_tilt_disc - total_disc - 3:.1f} dB Net")
-        
-        if total_disc < 15:
-            st.warning("High Multipath Risk! Tilt-up suggested.")
+with col1:
+    m = folium.Map(location=[st.session_state.site_a["lat"], st.session_state.site_a["lon"]], zoom_start=12)
+    folium.Marker([st.session_state.site_a["lat"], st.session_state.site_a["lon"]], icon=folium.Icon(color="green")).add_to(m)
+    folium.Marker([st.session_state.site_b["lat"], st.session_state.site_b["lon"]], icon=folium.Icon(color="red")).add_to(m)
+    st_folium(m, height=400, width=600)
 
-        # PDF Data Prep
-        df_att = calculate_itu_attenuation(40.7, -74.0, dist/1000, frequency_ghz, tx_power, gain_a, gain_b, env_temp, env_humidity)
-        ref_data = {
-            "total_disc": total_disc, "variance": var_pos, 
-            "tilted_disc": total_tilt_disc, "tilt_improvement": (total_tilt_disc - total_disc - 3)
-        }
-        ant_data = {"dia_a": diameter_a, "gain_a": gain_a, "dia_b": diameter_b, "gain_b": gain_b}
-        
-        # Dummy plots for snippet
-        fig = go.Figure(); fig.add_trace(go.Scatter(x=x, y=y))
-        with tempfile.TemporaryDirectory() as tmp:
-            p1 = os.path.join(tmp, "p1.png"); p2 = os.path.join(tmp, "p2.png")
-            fig.write_image(p1); fig.write_image(p2)
-            st.session_state.pdf_data = generate_pdf_report(None, None, dist/1000, frequency_ghz, p1, p2, df_att, ref_data, ant_data)
+with col2:
+    if st.button("Calculate Link & Analyze Multipath"):
+        with st.spinner("Analyzing terrain and reflections..."):
+            df_profile = get_elevation_profile(st.session_state.site_a["lat"], st.session_state.site_a["lon"], st.session_state.site_b["lat"], st.session_state.site_b["lon"])
+            
+            if df_profile is not None:
+                dist = df_profile.iloc[-1]["Distance (m)"]
+                abs_h_a = df_profile.iloc[0]["Elevation (m)"] + st.session_state.site_a["h"]
+                abs_h_b = df_profile.iloc[-1]["Elevation (m)"] + st.session_state.site_b["h"]
+                
+                # Multipath Geometry
+                x, y = df_profile["Distance (m)"].values, df_profile["Elevation (m)"].values
+                a_a = np.arctan2(abs_h_a - y, x); a_b = np.arctan2(abs_h_b - y, dist - x)
+                idx_ref = np.argmin(np.abs(a_a - a_b))
+                
+                angle_los = np.arctan2(abs_h_b - abs_h_a, dist)
+                off_a = np.degrees(abs(angle_los - np.arctan2(y[idx_ref]-abs_h_a, x[idx_ref])))
+                off_b = np.degrees(abs(np.arctan2(abs_h_a-abs_h_b, dist) - np.arctan2(y[idx_ref]-abs_h_b, dist-x[idx_ref])))
+                
+                # Nominal Suppression
+                disc_a = min(12.0 * (off_a / hpbw_a)**2, 30.0)
+                disc_b = min(12.0 * (off_b / hpbw_b)**2, 30.0)
+                total_disc = disc_a + disc_b
+                
+                # 1. EVALUATE TILT-UP (1.5dB loss means tilting ~0.354 * HPBW)
+                tilt_offset = np.sqrt(1.5 / 12.0)
+                off_a_tilted = off_a + (tilt_offset * hpbw_a)
+                off_b_tilted = off_b + (tilt_offset * hpbw_b)
+                tilted_disc = min(12.0 * (off_a_tilted / hpbw_a)**2, 35.0) + min(12.0 * (off_b_tilted / hpbw_b)**2, 35.0)
+                net_improvement = tilted_disc - total_disc - 3.0 # -3dB because both sides lose 1.5dB on main path
+
+                # 2. RSL VARIANCE (RIPPLE)
+                rho = 10**(-total_disc / 20.0)
+                var_pos = 20 * np.log10(1 + rho)
+                var_neg = 20 * np.log10(1 - rho)
+
+                # --- PLOTTING ---
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=x, y=y, fill='tozeroy', name='Terrain', line=dict(color='SaddleBrown')))
+                fig.add_trace(go.Scatter(x=[0, dist], y=[abs_h_a, abs_h_b], mode='lines+markers', name='Direct Path', line=dict(color='red', dash='dash')))
+                fig.add_trace(go.Scatter(x=[0, x[idx_ref], dist], y=[abs_h_a, y[idx_ref], abs_h_b], name='Reflected Path', line=dict(color='orange', dash='dot')))
+                st.plotly_chart(fig, use_container_width=True)
+
+                # --- RESULTS ---
+                st.subheader("Multipath Analysis")
+                mc1, mc2, mc3 = st.columns(3)
+                mc1.metric("Suppression (Nominal)", f"{total_disc:.1f} dB")
+                mc2.metric("RSL Ripple", f"+{var_pos:.2f} / {var_neg:.2f} dB")
+                mc3.metric("Suppression (Tilted)", f"{tilted_disc:.1f} dB", f"{net_improvement:.1f} dB Net")
+                
+                if total_disc < 15:
+                    st.error(f"Critical Multipath! Tilted suppression improves isolation by {net_improvement:.1f} dB (Net).")
+
+                # --- PDF GENERATION ---
+                df_attenuation = calculate_itu_attenuation(st.session_state.site_a["lat"], st.session_state.site_a["lon"], dist/1000, frequency_ghz, tx_power, gain_a, gain_b, env_temp, env_humidity)
+                ref_data = {"total_disc": total_disc, "var_pos": var_pos, "var_neg": var_neg, "tilted_disc": tilted_disc, "net_improvement": net_improvement}
+                ant_data = {"dia_a": diameter_a, "gain_a": gain_a, "dia_b": diameter_b, "gain_b": gain_b}
+                
+                with tempfile.TemporaryDirectory() as tmp:
+                    p1 = os.path.join(tmp, "m.png"); p2 = os.path.join(tmp, "p.png")
+                    fig.write_image(p2) # Reusing profile for demo; in real use you'd save map too
+                    # To keep it simple for this script, we'll use the profile twice if map capture isn't setup
+                    st.session_state.pdf_data = generate_pdf_report(st.session_state.site_a, st.session_state.site_b, dist/1000, frequency_ghz, p2, p2, df_attenuation, ref_data, ant_data)
 
 if st.session_state.pdf_data:
-    st.download_button("Download Updated Report", st.session_state.pdf_data, "Link_Report_V2.pdf")
+    st.download_button("📄 Download Professional Report", st.session_state.pdf_data, "RF_Link_Analysis.pdf", "application/pdf")
