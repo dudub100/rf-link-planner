@@ -153,6 +153,8 @@ def generate_pdf_report(site_a, site_b, d_km, f_ghz, map_img_path, profile_img_p
     pdf.cell(0, 6, f"Total Path Distance: {d_km:.3f} km", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 6, f"Antenna A Size: {ref_data['dia_a']} m | Gain: {ref_data['gain_a']:.1f} dBi", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 6, f"Antenna B Size: {ref_data['dia_b']} m | Gain: {ref_data['gain_b']:.1f} dBi", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Atmospheric Conditions: {ref_data['env_temp']} deg C | {ref_data['env_humidity']}% RH", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Clear Sky RSL: {ref_data['clear_rsl']}", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
     pdf.set_font("helvetica", "B", 12)
@@ -499,6 +501,10 @@ with col2:
                 st.dataframe(df_attenuation, use_container_width=True, hide_index=True)
 
                 # --- 5. PDF GENERATION ---
+                
+                # Fetch the Clear Sky RSL from the first row of the newly calculated DataFrame
+                clear_rsl_val = df_attenuation.iloc[0]["Clear RSL"] if not df_attenuation.empty else "N/A"
+                
                 ref_data = {
                     "total_disc": total_discrimination,
                     "ang_a": off_boresight_a,
@@ -515,7 +521,10 @@ with col2:
                     "dia_a": diameter_a,
                     "gain_a": gain_a,
                     "dia_b": diameter_b,
-                    "gain_b": gain_b
+                    "gain_b": gain_b,
+                    "env_temp": env_temp,           # Injected Temperature
+                    "env_humidity": env_humidity,   # Injected Humidity
+                    "clear_rsl": clear_rsl_val      # Injected Clear Sky RSL
                 }
                 
                 fig_map = go.Figure(go.Scattermapbox(mode="markers+lines", lon=[st.session_state.site_a["lon"], st.session_state.site_b["lon"]], lat=[st.session_state.site_a["lat"], st.session_state.site_b["lat"]], marker={'size': 12, 'color': ["green", "red"]}))
