@@ -1,4 +1,5 @@
 streamlit
+streamlit-geolocation
 folium
 streamlit-folium
 requests
