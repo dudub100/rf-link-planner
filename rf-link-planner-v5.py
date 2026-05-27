@@ -305,7 +305,7 @@ st.sidebar.divider()
 st.sidebar.subheader("🔗 Share Link")
 
 # IMPORTANT: Change this URL to your actual deployed Streamlit app URL!
-APP_BASE_URL = "https://your-app-name.streamlit.app" 
+APP_BASE_URL = "https://rf-link-planner-mfv7dneg7gmmchbhi5qyfb.streamlit.app/" 
 
 # Generate the app URL with Site A coordinates injected as Site B
 share_url = f"{APP_BASE_URL}?lat_b={st.session_state.site_a['lat']}&lon_b={st.session_state.site_a['lon']}"
